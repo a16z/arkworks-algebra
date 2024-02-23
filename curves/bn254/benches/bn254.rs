@@ -1,3 +1,4 @@
+#![allow(long_running_const_eval)]
 use ark_algebra_bench_templates::*;
 use ark_bn254::{fq::Fq, fq2::Fq2, fr::Fr, Bn254, Fq12, G1Projective as G1, G2Projective as G2};
 

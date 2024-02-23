@@ -1,6 +1,7 @@
 use super::{Fp, FpConfig};
 use crate::{
-    biginteger::arithmetic as fa, BigInt, BigInteger, PrimeField, SqrtPrecomputation, Zero,
+    biginteger::arithmetic as fa, AdditiveGroup, BigInt, BigInteger, PrimeField,
+    SqrtPrecomputation, Zero,
 };
 use ark_ff_macros::unroll_for_loops;
 use ark_std::marker::PhantomData;
@@ -76,6 +77,10 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
     /// The default is to use the standard Tonelli-Shanks algorithm.
     const SQRT_PRECOMP: Option<SqrtPrecomputation<Fp<MontBackend<Self, N>, N>>> =
         sqrt_precomputation::<N, Self>();
+
+    #[allow(long_running_const_eval)]
+    const SMALL_ELEMENT_MONTGOMERY_PRECOMP: [Fp<MontBackend<Self, N>, N>; 65536] =
+        small_element_montgomery_precomputation::<N, Self>();
 
     /// (MODULUS + 1) / 4 when MODULUS % 4 == 3. Used for square root precomputations.
     #[doc(hidden)]
@@ -355,8 +360,17 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
         }
     }
 
+    fn from_u64(r: u64) -> Option<Fp<MontBackend<Self, N>, N>> {
+        // Self::from_bigint(r.into())
+        if r < 65536 {
+            Some(Self::SMALL_ELEMENT_MONTGOMERY_PRECOMP[r as usize])
+        } else {
+            Self::from_bigint(r.into())
+        }
+    }
+
     fn from_bigint(r: BigInt<N>) -> Option<Fp<MontBackend<Self, N>, N>> {
-        let mut r = Fp::new_unchecked(r);
+        let mut r: Fp<MontBackend<Self, N>, N> = Fp::new_unchecked(r);
         if r.is_zero() {
             Some(r)
         } else if r.is_geq_modulus() {
@@ -560,6 +574,21 @@ pub const fn sqrt_precomputation<const N: usize, T: MontConfig<N>>(
     }
 }
 
+pub const fn small_element_montgomery_precomputation<const N: usize, T: MontConfig<N>>(
+) -> [Fp<MontBackend<T, N>, N>; 65536] {
+    let mut lookup_table: [Fp<MontBackend<T, N>, N>; 65536] =
+        [<Fp<MontBackend<T, N>, N>>::ZERO; 65536];
+
+    let mut i: usize = 1;
+    while i < 65536 {
+        let mut limbs = [0u64; N];
+        limbs[0] = i as u64;
+        lookup_table[i] = <Fp<MontBackend<T, N>, N>>::new(BigInt::new(limbs));
+        i += 1;
+    }
+    lookup_table
+}
+
 /// Construct a [`Fp<MontBackend<T, N>, N>`] element from a literal string. This
 /// should be used primarily for constructing constant field elements; in a
 /// non-const context, [`Fp::from_str`](`ark_std::str::FromStr::from_str`) is
@@ -625,6 +654,8 @@ impl<T: MontConfig<N>, const N: usize> FpConfig<N> for MontBackend<T, N> {
     const SMALL_SUBGROUP_BASE_ADICITY: Option<u32> = T::SMALL_SUBGROUP_BASE_ADICITY;
     const LARGE_SUBGROUP_ROOT_OF_UNITY: Option<Fp<Self, N>> = T::LARGE_SUBGROUP_ROOT_OF_UNITY;
     const SQRT_PRECOMP: Option<crate::SqrtPrecomputation<Fp<Self, N>>> = T::SQRT_PRECOMP;
+    const SMALL_ELEMENT_MONTGOMERY_PRECOMP: [Fp<Self, N>; 65536] =
+        T::SMALL_ELEMENT_MONTGOMERY_PRECOMP;
 
     fn add_assign(a: &mut Fp<Self, N>, b: &Fp<Self, N>) {
         T::add_assign(a, b)
@@ -675,6 +706,10 @@ impl<T: MontConfig<N>, const N: usize> FpConfig<N> for MontBackend<T, N> {
     #[allow(clippy::modulo_one)]
     fn into_bigint(a: Fp<Self, N>) -> BigInt<N> {
         T::into_bigint(a)
+    }
+
+    fn from_u64(r: u64) -> Option<Fp<Self, N>> {
+        T::from_u64(r)
     }
 }
 
