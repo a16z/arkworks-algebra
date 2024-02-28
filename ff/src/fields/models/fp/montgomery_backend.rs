@@ -1,8 +1,14 @@
 use ark_std::{marker::PhantomData, Zero};
 
 use super::{Fp, FpConfig};
-use crate::{biginteger::arithmetic as fa, BigInt, BigInteger, PrimeField, SqrtPrecomputation};
+use crate::{
+    biginteger::arithmetic::{self as fa},
+    fields::Field,
+    BigInt, BigInteger, PrimeField, SqrtPrecomputation,
+};
 use ark_ff_macros::unroll_for_loops;
+
+pub const PRECOMP_TABLE_SIZE: usize = 1 << 14;
 
 /// A trait that specifies the constants and arithmetic procedures
 /// for Montgomery arithmetic over the prime field defined by `MODULUS`.
@@ -75,6 +81,10 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
     /// The default is to use the standard Tonelli-Shanks algorithm.
     const SQRT_PRECOMP: Option<SqrtPrecomputation<Fp<MontBackend<Self, N>, N>>> =
         sqrt_precomputation::<N, Self>();
+
+    #[allow(long_running_const_eval)]
+    const SMALL_ELEMENT_MONTGOMERY_PRECOMP: [Fp<MontBackend<Self, N>, N>; PRECOMP_TABLE_SIZE] =
+        small_element_montgomery_precomputation::<N, Self>();
 
     /// (MODULUS + 1) / 4 when MODULUS % 4 == 3. Used for square root precomputations.
     #[doc(hidden)]
@@ -354,6 +364,16 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
         }
     }
 
+    fn from_u64(r: u64) -> Option<Fp<MontBackend<Self, N>, N>> {
+        if r < PRECOMP_TABLE_SIZE as u64 {
+            Some(Self::SMALL_ELEMENT_MONTGOMERY_PRECOMP[r as usize])
+        } else if BigInt::from(r) >= <MontBackend<Self, N>>::MODULUS {
+            None
+        } else {
+            Some(Fp::new_unchecked(Self::R2).mul_u64(r))
+        }
+    }
+
     fn from_bigint(r: BigInt<N>) -> Option<Fp<MontBackend<Self, N>, N>> {
         let mut r = Fp::new_unchecked(r);
         if r.is_zero() {
@@ -559,6 +579,23 @@ pub const fn sqrt_precomputation<const N: usize, T: MontConfig<N>>(
     }
 }
 
+/// Adapted the `bn256-table` feature from `halo2curves`:
+/// https://github.com/privacy-scaling-explorations/halo2curves/blob/main/script/bn256.py
+pub const fn small_element_montgomery_precomputation<const N: usize, T: MontConfig<N>>(
+) -> [Fp<MontBackend<T, N>, N>; PRECOMP_TABLE_SIZE] {
+    let mut lookup_table: [Fp<MontBackend<T, N>, N>; PRECOMP_TABLE_SIZE] =
+        [<Fp<MontBackend<T, N>, N>>::ZERO; PRECOMP_TABLE_SIZE];
+
+    let mut i: usize = 1;
+    while i < PRECOMP_TABLE_SIZE {
+        let mut limbs = [0u64; N];
+        limbs[0] = i as u64;
+        lookup_table[i] = <Fp<MontBackend<T, N>, N>>::new(BigInt::new(limbs));
+        i += 1;
+    }
+    lookup_table
+}
+
 /// Construct a [`Fp<MontBackend<T, N>, N>`] element from a literal string. This
 /// should be used primarily for constructing constant field elements; in a
 /// non-const context, [`Fp::from_str`](`ark_std::str::FromStr::from_str`) is
@@ -624,6 +661,8 @@ impl<T: MontConfig<N>, const N: usize> FpConfig<N> for MontBackend<T, N> {
     const SMALL_SUBGROUP_BASE_ADICITY: Option<u32> = T::SMALL_SUBGROUP_BASE_ADICITY;
     const LARGE_SUBGROUP_ROOT_OF_UNITY: Option<Fp<Self, N>> = T::LARGE_SUBGROUP_ROOT_OF_UNITY;
     const SQRT_PRECOMP: Option<crate::SqrtPrecomputation<Fp<Self, N>>> = T::SQRT_PRECOMP;
+    const SMALL_ELEMENT_MONTGOMERY_PRECOMP: [Fp<Self, N>; PRECOMP_TABLE_SIZE] =
+        T::SMALL_ELEMENT_MONTGOMERY_PRECOMP;
 
     fn add_assign(a: &mut Fp<Self, N>, b: &Fp<Self, N>) {
         T::add_assign(a, b)
@@ -674,6 +713,10 @@ impl<T: MontConfig<N>, const N: usize> FpConfig<N> for MontBackend<T, N> {
     #[allow(clippy::modulo_one)]
     fn into_bigint(a: Fp<Self, N>) -> BigInt<N> {
         T::into_bigint(a)
+    }
+
+    fn from_u64(r: u64) -> Option<Fp<Self, N>> {
+        T::from_u64(r)
     }
 }
 
@@ -787,6 +830,37 @@ impl<T: MontConfig<N>, const N: usize> Fp<MontBackend<T, N>, N> {
         }
     }
 
+    #[unroll_for_loops(12)]
+    #[inline(always)]
+    pub fn mul_u64(mut self, other: u64) -> Self {
+        let (mut lo, mut hi) = ([0u64; N], [0u64; N]);
+
+        for i in 0..N - 1 {
+            lo[i] = mac_with_carry!(lo[i], (self.0).0[i], other, &mut lo[i + 1]);
+        }
+        lo[N - 1] = mac_with_carry!(lo[N - 1], (self.0).0[N - 1], other, &mut hi[0]);
+
+        // Montgomery reduction
+        let mut carry2 = 0;
+        for i in 0..N {
+            let tmp = lo[i].wrapping_mul(T::INV);
+            let mut carry = 0u64;
+            mac!(lo[i], tmp, T::MODULUS.0[0], &mut carry);
+            for j in 1..N {
+                let k: usize = i + j;
+                if k >= N {
+                    hi[k - N] = mac_with_carry!(hi[k - N], tmp, T::MODULUS.0[j], &mut carry);
+                } else {
+                    lo[k] = mac_with_carry!(lo[k], tmp, T::MODULUS.0[j], &mut carry);
+                }
+            }
+            hi[i] = adc!(hi[i], carry, &mut carry2);
+        }
+
+(self.0).0 = hi;
+        self.const_subtract_modulus_with_carry(carry2 != 0)
+    }
+
     const fn const_is_valid(&self) -> bool {
         crate::const_for!((i in 0..N) {
             if (self.0).0[N - i - 1] < T::MODULUS.0[N - i - 1] {
@@ -821,9 +895,20 @@ impl<T: MontConfig<N>, const N: usize> Fp<MontBackend<T, N>, N> {
 
 #[cfg(test)]
 mod test {
-    use ark_std::{str::FromStr, vec::Vec};
+    use ark_std::{rand::RngCore, str::FromStr};
     use ark_test_curves::secp256k1::Fr;
     use num_bigint::{BigInt, BigUint, Sign};
+
+    #[test]
+    fn test_mul_u64() {
+        let r2 = Fr::new_unchecked(Fr::R2);
+        let mut rng = ark_std::test_rng();
+        let value = rng.next_u64();
+        assert_eq!(
+            r2.mul_u64(value),
+            r2 * Fr::new_unchecked(value.into())
+        );
+    }
 
     #[test]
     fn test_mont_macro_correctness() {

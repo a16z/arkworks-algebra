@@ -64,6 +64,10 @@ pub trait FpConfig<const N: usize>: Send + Sync + 'static + Sized {
     /// which works for every modulus.
     const SQRT_PRECOMP: Option<SqrtPrecomputation<Fp<Self, N>>>;
 
+    /// Precomputed lookup table for values 0..2^16 in Montgomery form.
+    /// Otherwise, conversion to Montgomery form requires a multiplication by R^2.
+    const SMALL_ELEMENT_MONTGOMERY_PRECOMP: [Fp<Self, N>; PRECOMP_TABLE_SIZE];
+
     /// Set a += b.
     fn add_assign(a: &mut Fp<Self, N>, b: &Fp<Self, N>);
 
@@ -96,6 +100,11 @@ pub trait FpConfig<const N: usize>: Send + Sync + 'static + Sized {
     /// Convert a field element to an integer in the range `0..(Self::MODULUS -
     /// 1)`.
     fn into_bigint(other: Fp<Self, N>) -> BigInt<N>;
+
+    /// Construct a field element from a u64 in the range
+    /// `0..(Self::MODULUS - 1)`. Returns `None` if the integer is outside
+    /// this range.
+    fn from_u64(other: u64) -> Option<Fp<Self, N>>;    
 }
 
 /// Represents an element of the prime field F_p, where `p == P::MODULUS`.
@@ -350,6 +359,11 @@ impl<P: FpConfig<N>, const N: usize> PrimeField for Fp<P, N> {
     fn into_bigint(self) -> BigInt<N> {
         P::into_bigint(self)
     }
+
+    #[inline]
+    fn from_u64(r: u64) -> Option<Self> {
+        P::from_u64(r)
+    }    
 }
 
 impl<P: FpConfig<N>, const N: usize> FftField for Fp<P, N> {
