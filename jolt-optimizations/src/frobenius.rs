@@ -6,7 +6,6 @@
 use crate::constants::get_frobenius_coefficients;
 use ark_bn254::{G2Affine, G2Projective};
 use ark_ec::{AffineRepr, CurveGroup};
-use ark_ff::Field;
 use ark_std::Zero;
 
 /// Compute the Frobenius endomorphism ψ^k for BN254 G2 (projective version)

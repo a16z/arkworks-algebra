@@ -1,19 +1,17 @@
-//! Multi-scalar multiplication (MSM) implementations using 4D decomposition
+//! 4D GLV scalar multiplication implementations using Shamir's trick
 //!
-//! This module provides optimized MSM algorithms for BN254 G2 using
-//! the Shamir trick with precomputed lookup tables.
+//! This module provides optimized scalar multiplication algorithms for BN254 G2 using
+//! 4-dimensional decomposition with the Shamir trick and precomputed lookup tables.
 
 use ark_bn254::{Fr, G2Projective};
 use ark_ec::Group;
 use ark_ff::PrimeField;
 use ark_std::Zero;
 use rayon::prelude::*;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::LazyLock;
 
 use crate::frobenius::frobenius_psi_power_projective;
 
-/// Precomputed Shamir lookup table for 4-point MSM with signed combinations
+/// Precomputed Shamir lookup table for 4-point scalar multiplication with signed combinations
 /// Contains all 256 combinations: 16 point combinations × 16 sign patterns
 pub struct PrecomputedShamirTable {
     pub table: [G2Projective; 256], // 2^4 point combinations × 2^4 sign patterns
@@ -75,49 +73,124 @@ impl PrecomputedShamirData {
     }
 }
 
-/// Global profiling data for MSM operations
-static MSM_PROFILE: LazyLock<MSMProfile> = LazyLock::new(|| MSMProfile::default());
-
-/// Global profiling data for precomputed MSM operations
-static MSM_PROFILE_PRECOMPUTED: LazyLock<MSMProfile> = LazyLock::new(|| MSMProfile::default());
-
-/// Profiling data for MSM operations
-#[derive(Default)]
-pub struct MSMProfile {
-    pub window_processing_ns: AtomicU64,
-    pub bucket_assignment_ns: AtomicU64,
-    pub bucket_summation_ns: AtomicU64,
-    pub window_combination_ns: AtomicU64,
-    pub total_calls: AtomicU64,
+/// Unified precomputation function for 4D GLV scalar multiplication
+/// 
+/// Takes an array of G2 points and precomputes everything needed for fast scalar multiplication:
+/// - Frobenius endomorphism powers ψ(P), ψ²(P), ψ³(P) for each point P
+/// - Shamir lookup tables with all 256 signed combinations for each point
+/// 
+/// This is the main function users should call to precompute data for repeated scalar multiplications.
+pub fn glv_four_precompute(points: &[G2Projective]) -> PrecomputedShamirData {
+    PrecomputedShamirData::new(points)
 }
 
-impl MSMProfile {
-    pub fn print_stats(&self) {
-        let calls = self.total_calls.load(Ordering::Relaxed);
-        if calls == 0 {
-            println!("  MSM Profile: No calls recorded");
-            return;
-        }
+/// Decomposed scalar representation for 4D GLV
+#[derive(Clone, Debug)]
+pub struct DecomposedScalar {
+    pub k_bigint: [<Fr as PrimeField>::BigInt; 4],
+    pub signs: [bool; 4],
+}
 
-        let window_proc = self.window_processing_ns.load(Ordering::Relaxed) as f64 / calls as f64;
-        let bucket_assign = self.bucket_assignment_ns.load(Ordering::Relaxed) as f64 / calls as f64;
-        let bucket_sum = self.bucket_summation_ns.load(Ordering::Relaxed) as f64 / calls as f64;
-        let window_comb = self.window_combination_ns.load(Ordering::Relaxed) as f64 / calls as f64;
-
-        println!("    MSM Profile (avg per call over {} calls):", calls);
-        println!("      Main loop:        {:.1} μs", window_proc / 1000.0);
-        println!("      Bit extraction:   {:.1} μs", bucket_assign / 1000.0);
-        println!("      Precomputation:   {:.1} μs", bucket_sum / 1000.0);
-        println!("      Window combination: {:.1} μs", window_comb / 1000.0);
-        println!(
-            "      Total:            {:.1} μs",
-            (window_proc + bucket_assign + bucket_sum + window_comb) / 1000.0
-        );
+impl DecomposedScalar {
+    /// Decompose a scalar into 4D GLV form
+    pub fn from_scalar(scalar: Fr) -> Self {
+        use crate::decomposition::{decompose_scalar_table_based, fr_to_bigint, u128_to_fr};
+        
+        let scalar_bigint = fr_to_bigint(scalar);
+        let (coeffs, signs) = decompose_scalar_table_based(&scalar_bigint);
+        
+        let k_bigint = [
+            u128_to_fr(coeffs[0]).into_bigint(),
+            u128_to_fr(coeffs[1]).into_bigint(),
+            u128_to_fr(coeffs[2]).into_bigint(),
+            u128_to_fr(coeffs[3]).into_bigint(),
+        ];
+        
+        Self { k_bigint, signs }
     }
 }
 
-/// Shamir trick for 4-point multi-scalar multiplication with parallelism
-pub fn msm_small_66bit(
+/// Core 4D GLV scalar multiplication using precomputed data and decomposed scalar
+/// 
+/// This is the main function that performs scalar multiplication using precomputed Shamir tables
+/// and an already decomposed scalar. This is most efficient when you have a fixed scalar
+/// that you want to multiply with many different points.
+/// 
+/// # Arguments
+/// * `precomputed_data` - Precomputed Shamir tables from `glv_four_precompute`
+/// * `decomposed_scalar` - Already decomposed scalar from `DecomposedScalar::from_scalar`
+/// 
+/// # Returns
+/// Vector of scalar multiplication results: [scalar * point[0], scalar * point[1], ...]
+pub fn glv_four_scalar_mul_decomposed(
+    precomputed_data: &PrecomputedShamirData,
+    decomposed_scalar: &DecomposedScalar,
+) -> Vec<G2Projective> {
+    precomputed_data
+        .shamir_tables
+        .par_iter()
+        .map(|shamir_table| {
+            shamir_glv_mul_precomputed(shamir_table, &decomposed_scalar.k_bigint, &decomposed_scalar.signs)
+        })
+        .collect()
+}
+
+/// Convenient wrapper for 4D GLV scalar multiplication with automatic decomposition
+/// 
+/// This function decomposes the scalar once and then performs scalar multiplication
+/// for all points. Use this when you have a single scalar and multiple points.
+/// For repeated operations with the same scalar, use `DecomposedScalar::from_scalar` 
+/// and `glv_four_scalar_mul_decomposed` directly.
+/// 
+/// # Arguments
+/// * `precomputed_data` - Precomputed Shamir tables from `glv_four_precompute`
+/// * `scalar` - The scalar to multiply with all points
+/// 
+/// # Returns
+/// Vector of scalar multiplication results: [scalar * point[0], scalar * point[1], ...]
+pub fn glv_four_scalar_mul(
+    precomputed_data: &PrecomputedShamirData,
+    scalar: Fr,
+) -> Vec<G2Projective> {
+    let decomposed_scalar = DecomposedScalar::from_scalar(scalar);
+    glv_four_scalar_mul_decomposed(precomputed_data, &decomposed_scalar)
+}
+
+/// 4D GLV scalar multiplication with online Frobenius computation
+/// 
+/// This function takes a scalar and array of points, decomposes the scalar once,
+/// and then computes Frobenius powers online for each point before doing scalar multiplication.
+/// This is useful when you have a fixed scalar but don't want to precompute Shamir tables.
+/// 
+/// # Arguments
+/// * `scalar` - The scalar to multiply with all points
+/// * `points` - Array of G2 points
+/// 
+/// # Returns
+/// Vector of scalar multiplication results: [scalar * point[0], scalar * point[1], ...]
+pub fn glv_four_scalar_mul_online(
+    scalar: Fr,
+    points: &[G2Projective],
+) -> Vec<G2Projective> {
+    let decomposed_scalar = DecomposedScalar::from_scalar(scalar);
+    
+    points
+        .par_iter()
+        .map(|point| {
+            // Compute Frobenius powers on the fly for each point
+            let frobenius_powers = [
+                *point,
+                frobenius_psi_power_projective(point, 1),
+                frobenius_psi_power_projective(point, 2),
+                frobenius_psi_power_projective(point, 3),
+            ];
+            shamir_glv_mul(&frobenius_powers, &decomposed_scalar.k_bigint, &decomposed_scalar.signs)
+        })
+        .collect()
+}
+
+/// Shamir trick for 4-point scalar multiplication with parallelism
+pub fn shamir_glv_mul(
     bases: &[G2Projective],
     scalars: &[<Fr as PrimeField>::BigInt],
     signs: &[bool],
@@ -126,11 +199,7 @@ pub fn msm_small_66bit(
     assert_eq!(scalars.len(), 4);
     assert_eq!(signs.len(), 4);
 
-    let _start_total = std::time::Instant::now();
-
     // Convert scalars to bit representations with signs
-    let start_bit_extraction = std::time::Instant::now();
-
     let bit_arrays: Vec<Vec<i8>> = scalars
         .par_iter()
         .zip(signs.par_iter())
@@ -171,11 +240,7 @@ pub fn msm_small_66bit(
         .max()
         .unwrap_or(0);
 
-    let bit_extraction_time = start_bit_extraction.elapsed().as_nanos() as u64;
-
     // Precompute all combinations: P0, P1, P2, P3, P0+P1, P0+P2, ..., P0+P1+P2+P3
-    let start_precompute = std::time::Instant::now();
-
     let mut precomputed = vec![G2Projective::zero(); 16]; // 2^4 combinations
 
     // Use parallelism to compute precomputed table
@@ -191,11 +256,7 @@ pub fn msm_small_66bit(
             }
         });
 
-    let precompute_time = start_precompute.elapsed().as_nanos() as u64;
-
     // Shamir trick: process bits from MSB to LSB
-    let start_shamir = std::time::Instant::now();
-
     let mut result = G2Projective::zero();
 
     for bit_idx in (0..max_bits).rev() {
@@ -249,28 +310,11 @@ pub fn msm_small_66bit(
         }
     }
 
-    let shamir_time = start_shamir.elapsed().as_nanos() as u64;
-
-    // Record timing
-    MSM_PROFILE
-        .bucket_assignment_ns
-        .fetch_add(bit_extraction_time, Ordering::Relaxed);
-    MSM_PROFILE
-        .bucket_summation_ns
-        .fetch_add(precompute_time, Ordering::Relaxed);
-    MSM_PROFILE
-        .window_processing_ns
-        .fetch_add(shamir_time, Ordering::Relaxed);
-    MSM_PROFILE
-        .window_combination_ns
-        .fetch_add(0, Ordering::Relaxed);
-    MSM_PROFILE.total_calls.fetch_add(1, Ordering::Relaxed);
-
     result
 }
 
 /// Optimized Shamir trick using precomputed table (no online precomputation)
-pub fn msm_small_66bit_precomputed(
+pub fn shamir_glv_mul_precomputed(
     shamir_table: &PrecomputedShamirTable,
     scalars: &[<Fr as PrimeField>::BigInt],
     signs: &[bool],
@@ -278,11 +322,7 @@ pub fn msm_small_66bit_precomputed(
     assert_eq!(scalars.len(), 4);
     assert_eq!(signs.len(), 4);
 
-    let _start_total = std::time::Instant::now();
-
     // Convert scalars to bit representations with signs
-    let start_bit_extraction = std::time::Instant::now();
-
     let bit_arrays: Vec<Vec<i8>> = scalars
         .par_iter()
         .zip(signs.par_iter())
@@ -323,11 +363,7 @@ pub fn msm_small_66bit_precomputed(
         .max()
         .unwrap_or(0);
 
-    let bit_extraction_time = start_bit_extraction.elapsed().as_nanos() as u64;
-
     // Shamir trick: process bits from MSB to LSB (using precomputed table)
-    let start_shamir = std::time::Instant::now();
-
     let mut result = G2Projective::zero();
 
     for bit_idx in (0..max_bits).rev() {
@@ -355,33 +391,5 @@ pub fn msm_small_66bit_precomputed(
         }
     }
 
-    let shamir_time = start_shamir.elapsed().as_nanos() as u64;
-
-    // Record timing (no precomputation time since it's done offline!)
-    MSM_PROFILE_PRECOMPUTED
-        .bucket_assignment_ns
-        .fetch_add(bit_extraction_time, Ordering::Relaxed);
-    MSM_PROFILE_PRECOMPUTED
-        .bucket_summation_ns
-        .fetch_add(0, Ordering::Relaxed); // No online precomputation!
-    MSM_PROFILE_PRECOMPUTED
-        .window_processing_ns
-        .fetch_add(shamir_time, Ordering::Relaxed);
-    MSM_PROFILE_PRECOMPUTED
-        .window_combination_ns
-        .fetch_add(0, Ordering::Relaxed);
-    MSM_PROFILE_PRECOMPUTED
-        .total_calls
-        .fetch_add(1, Ordering::Relaxed);
-
     result
-}
-
-/// Print profiling statistics for MSM operations
-pub fn print_msm_profile() {
-    println!("=== MSM Profiling Statistics ===");
-    println!("Standard MSM:");
-    MSM_PROFILE.print_stats();
-    println!("\nPrecomputed MSM:");
-    MSM_PROFILE_PRECOMPUTED.print_stats();
 }

@@ -10,10 +10,10 @@ pub mod constants;
 pub mod decomposition;
 pub mod frobenius;
 
-mod msm;
-pub use msm::{
-    msm_small_66bit, msm_small_66bit_precomputed, print_msm_profile, PrecomputedShamirData,
-    PrecomputedShamirTable,
+mod glv_four;
+pub use glv_four::{
+    glv_four_precompute, glv_four_scalar_mul, glv_four_scalar_mul_decomposed, glv_four_scalar_mul_online,
+    DecomposedScalar, shamir_glv_mul, shamir_glv_mul_precomputed, PrecomputedShamirData, PrecomputedShamirTable,
 };
 
 /// Re-export commonly used types
