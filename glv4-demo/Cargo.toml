@@ -1,0 +1,16 @@
+[package]
+name = "glv4-demo"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+# Use published arkworks versions for stability
+ark-ff = "0.4"
+ark-ec = "0.4"
+ark-std = "0.4"
+ark-bn254 = "0.4"
+num-bigint = "0.4"
+num-rational = "0.4.2"
+rayon = "1.8"

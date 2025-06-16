@@ -17,6 +17,9 @@ ark-ff = { workspace = true }
 ark-ec = { workspace = true }
 ark-std = { workspace = true }
 ark-r1cs-std = { workspace = true, optional = true }
+num-bigint = "0.4"
+num-integer = "0.1"
+num-traits = "0.2"
 
 [dev-dependencies]
 ark-serialize = { workspace = true }

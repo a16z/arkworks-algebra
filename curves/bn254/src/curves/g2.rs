@@ -1,10 +1,14 @@
 use ark_ec::AffineRepr;
 use ark_ec::{
     models::{short_weierstrass::SWCurveConfig, CurveConfig},
-    scalar_mul::glv::GLVConfig,
+    scalar_mul::glv::{GLVConfig, GLV4Config},
     short_weierstrass::{Affine, Projective},
 };
-use ark_ff::{AdditiveGroup, BigInt, Field, MontFp, PrimeField, Zero};
+use ark_ff::{AdditiveGroup, BigInt, Field, MontFp, PrimeField, Zero, One};
+use ark_ec::CurveGroup;
+use num_bigint::{BigInt as NumBigInt, Sign};
+use num_integer::Integer;
+use num_traits::sign::Signed;
 
 use crate::{Fq, Fq2, Fr};
 
@@ -130,7 +134,7 @@ const P_POWER_ENDOMORPHISM_COEFF_1: Fq2 = Fq2::new(
 const SIX_X_SQUARED: [u64; 2] = [17887900258952609094, 8020209761171036667];
 
 /// psi(P) is the untwist-Frobenius-twist endomorphism on E'(Fq2)
-fn p_power_endomorphism(p: &Affine<Config>) -> Affine<Config> {
+pub fn p_power_endomorphism(p: &Affine<Config>) -> Affine<Config> {
     // Maps (x,y) -> (x^p * (u+9)^((p-1)/3), y^p * (u+9)^((p-1)/2))
 
     let mut res = *p;
