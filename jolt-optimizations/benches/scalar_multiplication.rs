@@ -2,16 +2,15 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use rayon::prelude::*;
 
 use ark_bn254::{Fr, G2Affine, G2Projective};
-use ark_ec::{AffineRepr, AdditiveGroup};
+use ark_ec::PrimeGroup;
+use ark_ec::{AdditiveGroup, AffineRepr};
 use ark_ff::{PrimeField, UniformRand};
 use ark_std::test_rng;
-use ark_ec::PrimeGroup;
 
 use jolt_optimizations::{
     glv_four_precompute, glv_four_precompute_windowed, glv_four_precompute_windowed2_compact,
     glv_four_precompute_windowed2_signed, glv_four_scalar_mul, glv_four_scalar_mul_online,
-    glv_four_scalar_mul_windowed,
-    glv_four_scalar_mul_windowed2_signed,
+    glv_four_scalar_mul_windowed, glv_four_scalar_mul_windowed2_signed,
 };
 
 fn bench_scalar_multiplication(c: &mut Criterion) {

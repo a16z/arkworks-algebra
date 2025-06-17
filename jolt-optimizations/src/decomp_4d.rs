@@ -117,42 +117,6 @@ pub fn decompose_scalar_table_based(scalar: &BigInt) -> ([u128; 4], [bool; 4]) {
     )
 }
 
-/// Verify that the decomposition is algebraically correct
-///
-/// Checks that k ≡ k0 + k1*λ + k2*λ² + k3*λ³ (mod r)
-pub fn verify_decomposition(k: &Fr, coeffs: &[u128; 4], signs: &[bool; 4]) -> bool {
-    let lambda_psi = get_bn254_frobenius_eigenvalue();
-
-    let k0 = u128_to_fr(coeffs[0]);
-    let k1 = u128_to_fr(coeffs[1]);
-    let k2 = u128_to_fr(coeffs[2]);
-    let k3 = u128_to_fr(coeffs[3]);
-
-    let mut reconstructed = Fr::zero();
-    if signs[0] {
-        reconstructed -= k0;
-    } else {
-        reconstructed += k0;
-    }
-    if signs[1] {
-        reconstructed -= k1 * lambda_psi;
-    } else {
-        reconstructed += k1 * lambda_psi;
-    }
-    if signs[2] {
-        reconstructed -= k2 * lambda_psi * lambda_psi;
-    } else {
-        reconstructed += k2 * lambda_psi * lambda_psi;
-    }
-    if signs[3] {
-        reconstructed -= k3 * lambda_psi * lambda_psi * lambda_psi;
-    } else {
-        reconstructed += k3 * lambda_psi * lambda_psi * lambda_psi;
-    }
-
-    *k == reconstructed
-}
-
 /// Get the maximum bit length of the decomposed coefficients
 pub fn get_max_coefficient_bits(coeffs: &[u128; 4]) -> usize {
     coeffs

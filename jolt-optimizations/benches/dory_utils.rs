@@ -2,15 +2,15 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use std::time::Instant;
 
 use ark_bn254::{Fr, G2Affine, G2Projective};
-use ark_ec::{AffineRepr, AdditiveGroup};
+use ark_ec::PrimeGroup;
+use ark_ec::{AdditiveGroup, AffineRepr};
 use ark_ff::{PrimeField, UniformRand};
 use ark_std::test_rng;
-use ark_ec::PrimeGroup;
 
 use jolt_optimizations::{
     vector_scalar_mul_add, vector_scalar_mul_add_online, vector_scalar_mul_add_precomputed,
-    vector_scalar_mul_v_add_g_online, vector_scalar_mul_v_add_g_precomputed,
-    VectorScalarMulData, VectorScalarMulVData,
+    vector_scalar_mul_v_add_g_online, vector_scalar_mul_v_add_g_precomputed, VectorScalarMulData,
+    VectorScalarMulVData,
 };
 
 fn bench_vector_scalar_mul_add(c: &mut Criterion) {

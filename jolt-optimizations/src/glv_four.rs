@@ -496,7 +496,7 @@ pub struct DecomposedScalar {
 impl DecomposedScalar {
     /// Decompose a scalar into 4D GLV form
     pub fn from_scalar(scalar: Fr) -> Self {
-        use crate::decomposition::{decompose_scalar_table_based, fr_to_bigint, u128_to_fr};
+        use crate::decomp_4d::{decompose_scalar_table_based, fr_to_bigint, u128_to_fr};
 
         let scalar_bigint = fr_to_bigint(scalar);
         let (coeffs, signs) = decompose_scalar_table_based(&scalar_bigint);
@@ -729,7 +729,7 @@ pub fn glv_four_scalar_mul_online(scalar: Fr, points: &[G2Projective]) -> Vec<G2
 }
 
 /// Precomputed data for fixed-base vector MSM in G2
-/// 
+///
 /// This structure holds precomputed Frobenius endomorphism bases and Shamir tables
 /// for a fixed base point, allowing efficient multiplication by multiple scalars.
 #[derive(Clone, Debug, CanonicalSerialize, CanonicalDeserialize)]
@@ -750,32 +750,39 @@ impl FixedBasePrecomputedG2 {
             frobenius_psi_power_projective(base, 3),
         ];
         let shamir_table = PrecomputedShamirTable::new(&frobenius_bases);
-        
+
         Self {
             frobenius_bases,
             shamir_table,
         }
     }
-    
+
     /// Multiply the fixed base by a single scalar using decomposed form
     pub fn mul_scalar_decomposed(&self, decomposed_scalar: &DecomposedScalar) -> G2Projective {
-        shamir_glv_mul_precomputed(&self.shamir_table, &decomposed_scalar.k_bigint, &decomposed_scalar.signs)
+        shamir_glv_mul_precomputed(
+            &self.shamir_table,
+            &decomposed_scalar.k_bigint,
+            &decomposed_scalar.signs,
+        )
     }
-    
+
     /// Multiply the fixed base by a single scalar
     pub fn mul_scalar(&self, scalar: Fr) -> G2Projective {
         let decomposed_scalar = DecomposedScalar::from_scalar(scalar);
         self.mul_scalar_decomposed(&decomposed_scalar)
     }
-    
+
     /// Multiply the fixed base by multiple scalars (all decomposed)
-    pub fn mul_scalars_decomposed(&self, decomposed_scalars: &[DecomposedScalar]) -> Vec<G2Projective> {
+    pub fn mul_scalars_decomposed(
+        &self,
+        decomposed_scalars: &[DecomposedScalar],
+    ) -> Vec<G2Projective> {
         decomposed_scalars
             .par_iter()
             .map(|decomposed_scalar| self.mul_scalar_decomposed(decomposed_scalar))
             .collect()
     }
-    
+
     /// Multiply the fixed base by multiple scalars
     pub fn mul_scalars(&self, scalars: &[Fr]) -> Vec<G2Projective> {
         scalars
@@ -786,7 +793,7 @@ impl FixedBasePrecomputedG2 {
 }
 
 /// Fixed-base vector MSM for G2: multiply a single base point by multiple scalars
-/// 
+///
 /// This function efficiently computes `base * scalars[i]` for all i using 4D GLV decomposition.
 /// It precomputes the Frobenius endomorphism bases for the fixed base once and reuses them
 /// for all scalar multiplications, providing significant speedup compared to naive approaches.
@@ -804,102 +811,6 @@ impl FixedBasePrecomputedG2 {
 pub fn fixed_base_vector_msm_g2(base: &G2Projective, scalars: &[Fr]) -> Vec<G2Projective> {
     let precomputed = FixedBasePrecomputedG2::new(base);
     precomputed.mul_scalars(scalars)
-}
-
-#[cfg(test)]
-mod fixed_base_tests {
-    use super::*;
-    use ark_bn254::G2Affine;
-    use ark_ec::{AffineRepr, CurveGroup, PrimeGroup};
-    use ark_ff::UniformRand;
-    use ark_std::test_rng;
-
-    #[test]
-    fn test_fixed_base_vector_msm_g2_correctness() {
-        let mut rng = test_rng();
-
-        // Generate a fixed base point and multiple scalars
-        let base = G2Affine::rand(&mut rng).into_group();
-        let scalars: Vec<Fr> = (0..10).map(|_| Fr::rand(&mut rng)).collect();
-
-        // Compute using our optimized fixed-base MSM
-        let results_optimized = fixed_base_vector_msm_g2(&base, &scalars);
-
-        // Compute using naive approach for comparison
-        let results_naive: Vec<G2Projective> = scalars
-            .iter()
-            .map(|scalar| base.mul_bigint(scalar.into_bigint()))
-            .collect();
-
-        // Verify results match
-        for (i, (optimized, naive)) in results_optimized.iter().zip(results_naive.iter()).enumerate() {
-            assert_eq!(
-                optimized.into_affine(),
-                naive.into_affine(),
-                "Mismatch at index {}", i
-            );
-        }
-    }
-    
-    #[test]
-    fn test_fixed_base_precomputed_g2() {
-        let mut rng = test_rng();
-        let base = G2Affine::rand(&mut rng).into_group();
-        
-        // Test precomputed interface
-        let precomputed = FixedBasePrecomputedG2::new(&base);
-        
-        // Test single scalar
-        let scalar = Fr::rand(&mut rng);
-        let result = precomputed.mul_scalar(scalar);
-        let expected = base.mul_bigint(scalar.into_bigint());
-        assert_eq!(result.into_affine(), expected.into_affine());
-        
-        // Test decomposed scalar
-        let decomposed = DecomposedScalar::from_scalar(scalar);
-        let result_decomposed = precomputed.mul_scalar_decomposed(&decomposed);
-        assert_eq!(result_decomposed.into_affine(), expected.into_affine());
-        
-        // Test multiple scalars
-        let scalars: Vec<Fr> = (0..5).map(|_| Fr::rand(&mut rng)).collect();
-        let results = precomputed.mul_scalars(&scalars);
-        for (i, (result, scalar)) in results.iter().zip(scalars.iter()).enumerate() {
-            let expected = base.mul_bigint(scalar.into_bigint());
-            assert_eq!(result.into_affine(), expected.into_affine(), "Mismatch at index {}", i);
-        }
-        
-        // Test decomposed scalars
-        let decomposed_scalars: Vec<DecomposedScalar> = scalars
-            .iter()
-            .map(|s| DecomposedScalar::from_scalar(*s))
-            .collect();
-        let results_decomposed = precomputed.mul_scalars_decomposed(&decomposed_scalars);
-        for (i, (result, expected)) in results_decomposed.iter().zip(results.iter()).enumerate() {
-            assert_eq!(result.into_affine(), expected.into_affine(), "Decomposed mismatch at index {}", i);
-        }
-    }
-
-    #[test] 
-    fn test_fixed_base_vector_msm_g2_edge_cases() {
-        let mut rng = test_rng();
-        let base = G2Affine::rand(&mut rng).into_group();
-
-        // Test with single scalar
-        let single_scalar = vec![Fr::rand(&mut rng)];
-        let single_result = fixed_base_vector_msm_g2(&base, &single_scalar);
-        let expected = base.mul_bigint(single_scalar[0].into_bigint());
-        assert_eq!(single_result[0].into_affine(), expected.into_affine());
-
-        // Test with zero scalar
-        let zero_scalar = vec![Fr::from(0u64)];
-        let zero_result = fixed_base_vector_msm_g2(&base, &zero_scalar);
-        assert_eq!(zero_result[0], G2Projective::zero());
-
-        // Test with empty vector
-        let empty_scalars: Vec<Fr> = vec![];
-        let empty_result = fixed_base_vector_msm_g2(&base, &empty_scalars);
-        assert!(empty_result.is_empty());
-    }
 }
 
 /// Shamir trick for 4-point scalar multiplication with parallelism

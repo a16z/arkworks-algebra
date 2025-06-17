@@ -2,10 +2,10 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use std::time::Instant;
 
 use ark_bn254::{Fr, G1Affine, G1Projective};
-use ark_ec::{AffineRepr, AdditiveGroup};
+use ark_ec::PrimeGroup;
+use ark_ec::{AdditiveGroup, AffineRepr};
 use ark_ff::{PrimeField, UniformRand};
 use ark_std::test_rng;
-use ark_ec::PrimeGroup;
 
 use jolt_optimizations::{
     vector_scalar_mul_add_g1, vector_scalar_mul_add_g1_online,
