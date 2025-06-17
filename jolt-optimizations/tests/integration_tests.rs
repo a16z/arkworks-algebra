@@ -1,8 +1,9 @@
 use ark_bn254::{Fr, G2Affine, G2Projective};
-use ark_ec::{AffineRepr, CurveGroup, Group};
+use ark_ec::{AffineRepr, CurveGroup, AdditiveGroup};
 use ark_ff::{PrimeField, UniformRand};
 use ark_std::{test_rng, Zero};
 use num_bigint::BigInt;
+use ark_ec::PrimeGroup;
 
 use jolt_optimizations::constants::get_bn254_frobenius_eigenvalue;
 use jolt_optimizations::decomposition::{

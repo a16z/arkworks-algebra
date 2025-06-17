@@ -9,7 +9,7 @@ fn main() {
 
     // Path to the sage script
     let sage_script = "scripts/bn254_table.sage";
-    
+
     println!("cargo:rerun-if-changed={}", sage_script);
     println!("cargo:rerun-if-changed=build.rs");
 
@@ -29,11 +29,13 @@ fn main() {
     }
 
     // Write the generated table to the output file
-    let table_content = String::from_utf8(output.stdout)
-        .expect("Sage script output is not valid UTF-8");
+    let table_content =
+        String::from_utf8(output.stdout).expect("Sage script output is not valid UTF-8");
 
-    fs::write(&dest_path, table_content)
-        .expect("Failed to write generated table to output file");
+    fs::write(&dest_path, table_content).expect("Failed to write generated table to output file");
 
-    println!("Generated power of 2 decompositions table at: {}", dest_path.display());
+    println!(
+        "Generated power of 2 decompositions table at: {}",
+        dest_path.display()
+    );
 }

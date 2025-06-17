@@ -2,11 +2,17 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use rayon::prelude::*;
 
 use ark_bn254::{Fr, G2Affine, G2Projective};
-use ark_ec::{AffineRepr, Group};
+use ark_ec::{AffineRepr, AdditiveGroup};
 use ark_ff::{PrimeField, UniformRand};
 use ark_std::test_rng;
+use ark_ec::PrimeGroup;
 
-use jolt_optimizations::{glv_four_precompute, glv_four_scalar_mul, glv_four_scalar_mul_online};
+use jolt_optimizations::{
+    glv_four_precompute, glv_four_precompute_windowed, glv_four_precompute_windowed2_compact,
+    glv_four_precompute_windowed2_signed, glv_four_scalar_mul, glv_four_scalar_mul_online,
+    glv_four_scalar_mul_windowed,
+    glv_four_scalar_mul_windowed2_signed,
+};
 
 fn bench_scalar_multiplication(c: &mut Criterion) {
     let mut rng = test_rng();
@@ -14,7 +20,7 @@ fn bench_scalar_multiplication(c: &mut Criterion) {
     // Fix a random scalar for all tests
     let scalar = Fr::rand(&mut rng);
 
-    const NUM_TESTS: usize = 10000;
+    const NUM_TESTS: usize = 100000;
 
     // Generate random points
     let points: Vec<G2Projective> = (0..NUM_TESTS)
@@ -22,6 +28,9 @@ fn bench_scalar_multiplication(c: &mut Criterion) {
         .collect();
 
     let glv_precomputed = glv_four_precompute(&points);
+    let glv_windowed = glv_four_precompute_windowed(&points);
+    let glv_windowed2_signed = glv_four_precompute_windowed2_signed(&points);
+    let glv_windowed2_compact = glv_four_precompute_windowed2_compact(&points);
 
     let mut group = c.benchmark_group("scalar_multiplication");
 
@@ -41,22 +50,40 @@ fn bench_scalar_multiplication(c: &mut Criterion) {
     group.bench_with_input(
         BenchmarkId::new("4d_precomputed", NUM_TESTS),
         &glv_precomputed,
-        |b, glv_precomputed| {
+        |b, glv_precomputed| b.iter(|| black_box(glv_four_scalar_mul(glv_precomputed, scalar))),
+    );
+
+    group.bench_with_input(
+        BenchmarkId::new("4d_windowed", NUM_TESTS),
+        &glv_windowed,
+        |b, glv_windowed| b.iter(|| black_box(glv_four_scalar_mul_windowed(glv_windowed, scalar))),
+    );
+
+    group.bench_with_input(
+        BenchmarkId::new("4d_windowed2_signed", NUM_TESTS),
+        &glv_windowed2_signed,
+        |b, glv_windowed2_signed| {
             b.iter(|| {
-                black_box(glv_four_scalar_mul(glv_precomputed, scalar))
+                black_box(glv_four_scalar_mul_windowed2_signed(
+                    glv_windowed2_signed,
+                    scalar,
+                ))
             })
         },
     );
 
-    group.bench_with_input(
-        BenchmarkId::new("4d_online", NUM_TESTS),
-        &points,
-        |b, points| {
-            b.iter(|| {
-                black_box(glv_four_scalar_mul_online(scalar, points))
-            })
-        },
-    );
+    // group.bench_with_input(
+    //     BenchmarkId::new("4d_windowed2_compact", NUM_TESTS),
+    //     &glv_windowed2_compact,
+    //     |b, glv_windowed2_compact| {
+    //         b.iter(|| {
+    //             black_box(glv_four_scalar_mul_windowed2_compact(
+    //                 glv_windowed2_compact,
+    //                 scalar,
+    //             ))
+    //         })
+    //     },
+    // );
 
     group.finish();
 }
