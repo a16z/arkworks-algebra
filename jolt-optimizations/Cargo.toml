@@ -50,3 +50,7 @@ harness = false
 [[bench]]
 name = "g1_dory_utils"
 harness = false
+
+[[example]]
+name = "fixed_base_msm"
+path = "examples/fixed_base_msm.rs"

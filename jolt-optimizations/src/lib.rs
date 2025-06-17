@@ -14,14 +14,15 @@ pub mod g1_glvtwo;
 
 mod glv_four;
 pub use glv_four::{
-    glv_four_precompute, glv_four_precompute_windowed, glv_four_precompute_windowed2_compact,
-    glv_four_precompute_windowed2_signed, glv_four_scalar_mul, glv_four_scalar_mul_decomposed,
-    glv_four_scalar_mul_online, glv_four_scalar_mul_windowed, glv_four_scalar_mul_windowed2_signed,
+    fixed_base_vector_msm_g2, glv_four_precompute, glv_four_precompute_windowed,
+    glv_four_precompute_windowed2_compact, glv_four_precompute_windowed2_signed,
+    glv_four_scalar_mul, glv_four_scalar_mul_decomposed, glv_four_scalar_mul_online,
+    glv_four_scalar_mul_windowed, glv_four_scalar_mul_windowed2_signed,
     glv_four_scalar_mul_windowed2_signed_decomposed, glv_four_scalar_mul_windowed_decomposed,
     shamir_glv_mul, shamir_glv_mul_precomputed, shamir_glv_mul_windowed,
-    shamir_glv_mul_windowed2_signed, DecomposedScalar, PrecomputedShamirData,
-    PrecomputedShamirTable, Windowed2CompactData, Windowed2CompactTable, Windowed2SignedData,
-    Windowed2SignedTable, WindowedData, WindowedTable,
+    shamir_glv_mul_windowed2_signed, DecomposedScalar, FixedBasePrecomputedG2,
+    PrecomputedShamirData, PrecomputedShamirTable, Windowed2CompactData, Windowed2CompactTable,
+    Windowed2SignedData, Windowed2SignedTable, WindowedData, WindowedTable,
 };
 
 /// Re-export commonly used types
@@ -29,25 +30,20 @@ pub use ark_bn254::{Fr, G1Affine, G1Projective, G2Affine, G2Projective};
 
 /// Re-export G1 2D GLV utilities
 pub use g1_glvtwo::{
-    glv_two_precompute,
-    glv_two_precompute_windowed2_signed,
-    glv_two_scalar_mul,
-    glv_two_scalar_mul_decomposed,
-    glv_two_scalar_mul_online,
+    fixed_base_vector_msm_g1, glv_two_precompute, glv_two_precompute_windowed2_signed,
+    glv_two_scalar_mul, glv_two_scalar_mul_decomposed, glv_two_scalar_mul_online,
     glv_two_scalar_mul_windowed2_signed,
     // G1 vector scalar multiplication utilities
-    vector_scalar_mul_add_g1,
-    vector_scalar_mul_add_g1_online,
-    vector_scalar_mul_add_g1_precomputed,
-    PrecomputedShamir2Data,
-    PrecomputedShamir2Table,
-    VectorScalarMulG1Data,
-    Windowed2Signed2Data,
-    Windowed2Signed2Table,
+    vector_scalar_mul_add_g1, vector_scalar_mul_add_g1_online,
+    vector_scalar_mul_add_g1_precomputed, vector_scalar_mul_v_add_g_g1_online,
+    vector_scalar_mul_v_add_g_g1_precomputed, DecomposedScalar2D, FixedBasePrecomputedG1,
+    PrecomputedShamir2Data, PrecomputedShamir2Table, VectorScalarMulG1Data,
+    VectorScalarMulG1VData, Windowed2Signed2Data, Windowed2Signed2Table,
 };
 
 /// Re-export Dory utilities
 pub use dory_utils::{
     vector_scalar_mul_add, vector_scalar_mul_add_online, vector_scalar_mul_add_precomputed,
-    VectorScalarMulData,
+    vector_scalar_mul_v_add_g_online, vector_scalar_mul_v_add_g_precomputed,
+    VectorScalarMulData, VectorScalarMulVData,
 };

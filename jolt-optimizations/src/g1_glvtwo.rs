@@ -111,6 +111,7 @@ fn glv_endomorphism(point: &G1Projective) -> G1Projective {
 
 /// Precomputed Shamir lookup table for 2-point scalar multiplication with signed combinations
 /// Contains all 16 combinations: 4 point combinations × 4 sign patterns
+#[derive(Clone, Debug)]
 pub struct PrecomputedShamir2Table {
     pub table: [G1Projective; 16], // 2^2 point combinations × 2^2 sign patterns
 }
@@ -274,6 +275,94 @@ pub fn glv_two_scalar_mul_online(scalar: Fr, points: &[G1Projective]) -> Vec<G1P
         .collect()
 }
 
+/// Decomposed scalar for 2D GLV
+#[derive(Clone, Debug)]
+pub struct DecomposedScalar2D {
+    pub coeffs: [<Fr as PrimeField>::BigInt; 2],
+    pub signs: [bool; 2],
+}
+
+impl DecomposedScalar2D {
+    /// Create from a scalar
+    pub fn from_scalar(scalar: Fr) -> Self {
+        let (coeffs, signs) = decompose_scalar_2d(scalar);
+        Self { coeffs, signs }
+    }
+}
+
+/// Precomputed data for fixed-base vector MSM in G1
+/// 
+/// This structure holds precomputed GLV endomorphism bases and Shamir tables
+/// for a fixed base point, allowing efficient multiplication by multiple scalars.
+#[derive(Clone, Debug)]
+pub struct FixedBasePrecomputedG1 {
+    /// The GLV endomorphism bases [P, λ(P)]
+    pub glv_bases: [G1Projective; 2],
+    /// Precomputed Shamir table for all combinations and signs
+    pub shamir_table: PrecomputedShamir2Table,
+}
+
+impl FixedBasePrecomputedG1 {
+    /// Create precomputed data for a fixed base point
+    pub fn new(base: &G1Projective) -> Self {
+        let glv_bases = [*base, glv_endomorphism(base)];
+        let shamir_table = PrecomputedShamir2Table::new(&glv_bases);
+        
+        Self {
+            glv_bases,
+            shamir_table,
+        }
+    }
+    
+    /// Multiply the fixed base by a single scalar using decomposed form
+    pub fn mul_scalar_decomposed(&self, decomposed_scalar: &DecomposedScalar2D) -> G1Projective {
+        shamir_glv_mul_2d_precomputed(&self.shamir_table, &decomposed_scalar.coeffs, &decomposed_scalar.signs)
+    }
+    
+    /// Multiply the fixed base by a single scalar
+    pub fn mul_scalar(&self, scalar: Fr) -> G1Projective {
+        let decomposed_scalar = DecomposedScalar2D::from_scalar(scalar);
+        self.mul_scalar_decomposed(&decomposed_scalar)
+    }
+    
+    /// Multiply the fixed base by multiple scalars (all decomposed)
+    pub fn mul_scalars_decomposed(&self, decomposed_scalars: &[DecomposedScalar2D]) -> Vec<G1Projective> {
+        decomposed_scalars
+            .par_iter()
+            .map(|decomposed_scalar| self.mul_scalar_decomposed(decomposed_scalar))
+            .collect()
+    }
+    
+    /// Multiply the fixed base by multiple scalars
+    pub fn mul_scalars(&self, scalars: &[Fr]) -> Vec<G1Projective> {
+        scalars
+            .par_iter()
+            .map(|scalar| self.mul_scalar(*scalar))
+            .collect()
+    }
+}
+
+/// Fixed-base vector MSM for G1: multiply a single base point by multiple scalars
+/// 
+/// This function efficiently computes `base * scalars[i]` for all i using 2D GLV decomposition.
+/// It precomputes the GLV endomorphism bases for the fixed base once and reuses them
+/// for all scalar multiplications, providing significant speedup compared to naive approaches.
+///
+/// # Arguments
+/// * `base` - The fixed G1 base point to multiply
+/// * `scalars` - Vector of scalars to multiply the base by
+///
+/// # Returns
+/// Vector of results where `result[i] = base * scalars[i]`
+///
+/// # Performance
+/// This is optimal when you have a fixed base point and multiple different scalars,
+/// as it avoids recomputing GLV endomorphisms for each scalar multiplication.
+pub fn fixed_base_vector_msm_g1(base: &G1Projective, scalars: &[Fr]) -> Vec<G1Projective> {
+    let precomputed = FixedBasePrecomputedG1::new(base);
+    precomputed.mul_scalars(scalars)
+}
+
 /// 2-bit signed windowed 2D GLV scalar multiplication using precomputed data
 pub fn glv_two_scalar_mul_windowed2_signed(
     windowed2_signed_data: &Windowed2Signed2Data,
@@ -374,6 +463,99 @@ pub fn vector_scalar_mul_add_g1_online(
 pub fn vector_scalar_mul_add_g1(v: &mut [G1Projective], generators: &[G1Projective], scalar: Fr) {
     let data = VectorScalarMulG1Data::new(generators, scalar);
     vector_scalar_mul_add_g1_precomputed(v, &data);
+}
+
+/// Precomputed data for efficient vector scalar multiplication where we scale the vector elements
+/// and add generators: v[i] = scalar * v[i] + generators[i]
+#[derive(Clone, Debug)]
+pub struct VectorScalarMulG1VData {
+    /// Decomposed scalar coefficients
+    pub scalar_coeffs: [<Fr as PrimeField>::BigInt; 2],
+    /// Signs for each coefficient
+    pub scalar_signs: [bool; 2],
+}
+
+impl VectorScalarMulG1VData {
+    /// Create precomputed scalar decomposition for vector element scaling
+    ///
+    /// # Arguments
+    /// * `scalar` - Fixed scalar that will be used to scale vector elements
+    pub fn new(scalar: Fr) -> Self {
+        let (scalar_coeffs, scalar_signs) = decompose_scalar_2d(scalar);
+        
+        Self {
+            scalar_coeffs,
+            scalar_signs,
+        }
+    }
+}
+
+/// Perform vector scalar multiplication with vector scaling using precomputed data
+///
+/// Computes `v[i] = scalar * v[i] + generators[i]` for all i, where scalar decomposition
+/// is precomputed in `data`.
+///
+/// # Arguments
+/// * `v` - Mutable reference to vector to update (will be scaled and then added to)
+/// * `generators` - Fixed G1 generators to add to scaled vector elements
+/// * `data` - Precomputed data containing decomposed scalar
+///
+/// # Panics
+/// * If `v.len() != generators.len()`
+pub fn vector_scalar_mul_v_add_g_g1_precomputed(
+    v: &mut [G1Projective],
+    generators: &[G1Projective],
+    data: &VectorScalarMulG1VData,
+) {
+    assert_eq!(
+        v.len(),
+        generators.len(),
+        "Vector and generators must have the same length"
+    );
+
+    use rayon::prelude::*;
+
+    // Perform scalar multiplication and addition in parallel
+    v.par_iter_mut()
+        .zip(generators.par_iter())
+        .for_each(|(v_point, generator)| {
+            // Compute GLV bases for current vector element
+            let glv_bases = [*v_point, glv_endomorphism(v_point)];
+
+            // Create temporary Shamir table for v_point
+            let shamir_table = PrecomputedShamir2Table::new(&glv_bases);
+
+            // Perform scalar multiplication: scalar * v[i] + generators[i]
+            let v_scaled = shamir_glv_mul_2d_precomputed(&shamir_table, &data.scalar_coeffs, &data.scalar_signs);
+            *v_point = v_scaled + generator;
+        });
+}
+
+/// Perform vector scalar multiplication with vector scaling online (without precomputation)
+///
+/// Computes `v[i] = scalar * v[i] + generators[i]` for all i.
+/// This version decomposes the scalar once but doesn't use precomputed tables.
+///
+/// # Arguments
+/// * `v` - Mutable reference to vector to update (will be scaled and then added to)
+/// * `generators` - Fixed G1 generators to add to scaled vector elements  
+/// * `scalar` - Fixed scalar to multiply with each vector element
+///
+/// # Panics
+/// * If `v.len() != generators.len()`
+pub fn vector_scalar_mul_v_add_g_g1_online(
+    v: &mut [G1Projective],
+    generators: &[G1Projective],
+    scalar: Fr,
+) {
+    assert_eq!(
+        v.len(),
+        generators.len(),
+        "Vector and generators must have the same length"
+    );
+
+    let data = VectorScalarMulG1VData::new(scalar);
+    vector_scalar_mul_v_add_g_g1_precomputed(v, generators, &data);
 }
 
 /// Core Shamir trick implementation for 2D GLV using precomputed table
@@ -513,7 +695,7 @@ pub fn shamir_glv_mul_windowed2_signed_2d(
 mod tests {
     use super::*;
     use ark_bn254::G1Affine;
-    use ark_ec::{AffineRepr, CurveGroup};
+    use ark_ec::{AffineRepr, CurveGroup, PrimeGroup};
     use ark_ff::UniformRand;
     use ark_std::test_rng;
 
@@ -725,5 +907,165 @@ mod tests {
         let mut v_identity = vec![v_original];
         vector_scalar_mul_add_g1_online(&mut v_identity, &identity_generators, scalar);
         assert_eq!(v_identity[0], v_original);
+    }
+
+    #[test]
+    fn test_g1_vector_scalar_mul_v_add_g() {
+        let mut rng = test_rng();
+
+        // Generate test data
+        let num_points = 10;
+        let generators: Vec<G1Projective> = (0..num_points)
+            .map(|_| G1Affine::rand(&mut rng).into_group())
+            .collect();
+        let scalar = Fr::rand(&mut rng);
+
+        // Initialize v with random points
+        let v_original: Vec<G1Projective> = (0..num_points)
+            .map(|_| G1Affine::rand(&mut rng).into_group())
+            .collect();
+        let mut v_online = v_original.clone();
+        let mut v_precomputed = v_original.clone();
+
+        // Test online version
+        vector_scalar_mul_v_add_g_g1_online(&mut v_online, &generators, scalar);
+
+        // Test precomputed version
+        let data = VectorScalarMulG1VData::new(scalar);
+        vector_scalar_mul_v_add_g_g1_precomputed(&mut v_precomputed, &generators, &data);
+
+        // Compare with naive computation: scalar * v[i] + generators[i]
+        for i in 0..num_points {
+            let expected = v_original[i].mul_bigint(scalar.into_bigint()) + generators[i];
+
+            assert_eq!(
+                v_online[i].into_affine(),
+                expected.into_affine(),
+                "Online version mismatch at index {}",
+                i
+            );
+            assert_eq!(
+                v_precomputed[i].into_affine(),
+                expected.into_affine(),
+                "Precomputed version mismatch at index {}",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_g1_vector_v_add_g_edge_cases() {
+        let mut rng = test_rng();
+
+        // Test with single point
+        let generators = vec![G1Affine::rand(&mut rng).into_group()];
+        let mut v = vec![G1Affine::rand(&mut rng).into_group()];
+        let v_original = v[0];
+        let scalar = Fr::rand(&mut rng);
+
+        vector_scalar_mul_v_add_g_g1_online(&mut v, &generators, scalar);
+        let expected = v_original.mul_bigint(scalar.into_bigint()) + generators[0];
+        assert_eq!(v[0].into_affine(), expected.into_affine());
+
+        // Test with zero scalar
+        let mut v_zero = vec![v_original];
+        let scalar_zero = Fr::from(0u64);
+        vector_scalar_mul_v_add_g_g1_online(&mut v_zero, &generators, scalar_zero);
+        let expected_zero = generators[0]; // 0 * v + g = g
+        assert_eq!(v_zero[0].into_affine(), expected_zero.into_affine());
+
+        // Test with identity generator
+        let identity_generators = vec![G1Projective::zero()];
+        let mut v_identity = vec![v_original];
+        vector_scalar_mul_v_add_g_g1_online(&mut v_identity, &identity_generators, scalar);
+        let expected_identity = v_original.mul_bigint(scalar.into_bigint()); // scalar * v + 0 = scalar * v
+        assert_eq!(v_identity[0].into_affine(), expected_identity.into_affine());
+    }
+
+    #[test]
+    fn test_fixed_base_vector_msm_g1_correctness() {
+        let mut rng = test_rng();
+
+        // Generate a fixed base point and multiple scalars
+        let base = G1Affine::rand(&mut rng).into_group();
+        let scalars: Vec<Fr> = (0..10).map(|_| Fr::rand(&mut rng)).collect();
+
+        // Compute using our optimized fixed-base MSM
+        let results_optimized = fixed_base_vector_msm_g1(&base, &scalars);
+
+        // Compute using naive approach for comparison
+        let results_naive: Vec<G1Projective> = scalars
+            .iter()
+            .map(|scalar| base.mul_bigint(scalar.into_bigint()))
+            .collect();
+
+        // Verify results match
+        for (i, (optimized, naive)) in results_optimized.iter().zip(results_naive.iter()).enumerate() {
+            assert_eq!(
+                optimized.into_affine(),
+                naive.into_affine(),
+                "Mismatch at index {}", i
+            );
+        }
+    }
+    
+    #[test]
+    fn test_fixed_base_precomputed_g1() {
+        let mut rng = test_rng();
+        let base = G1Affine::rand(&mut rng).into_group();
+        
+        // Test precomputed interface
+        let precomputed = FixedBasePrecomputedG1::new(&base);
+        
+        // Test single scalar
+        let scalar = Fr::rand(&mut rng);
+        let result = precomputed.mul_scalar(scalar);
+        let expected = base.mul_bigint(scalar.into_bigint());
+        assert_eq!(result.into_affine(), expected.into_affine());
+        
+        // Test decomposed scalar
+        let decomposed = DecomposedScalar2D::from_scalar(scalar);
+        let result_decomposed = precomputed.mul_scalar_decomposed(&decomposed);
+        assert_eq!(result_decomposed.into_affine(), expected.into_affine());
+        
+        // Test multiple scalars
+        let scalars: Vec<Fr> = (0..5).map(|_| Fr::rand(&mut rng)).collect();
+        let results = precomputed.mul_scalars(&scalars);
+        for (i, (result, scalar)) in results.iter().zip(scalars.iter()).enumerate() {
+            let expected = base.mul_bigint(scalar.into_bigint());
+            assert_eq!(result.into_affine(), expected.into_affine(), "Mismatch at index {}", i);
+        }
+        
+        // Test decomposed scalars
+        let decomposed_scalars: Vec<DecomposedScalar2D> = scalars
+            .iter()
+            .map(|s| DecomposedScalar2D::from_scalar(*s))
+            .collect();
+        let results_decomposed = precomputed.mul_scalars_decomposed(&decomposed_scalars);
+        for (i, (result, expected)) in results_decomposed.iter().zip(results.iter()).enumerate() {
+            assert_eq!(result.into_affine(), expected.into_affine(), "Decomposed mismatch at index {}", i);
+        }
+    }
+
+    #[test] 
+    fn test_fixed_base_vector_msm_g1_edge_cases() {
+        let mut rng = test_rng();
+        let base = G1Affine::rand(&mut rng).into_group();
+
+        // Test with single scalar
+        let single_scalar = vec![Fr::rand(&mut rng)];
+        let single_result = fixed_base_vector_msm_g1(&base, &single_scalar);
+        let expected = base.mul_bigint(single_scalar[0].into_bigint());
+        assert_eq!(single_result[0].into_affine(), expected.into_affine());
+
+        // Test with zero scalar
+        let zero_scalar = vec![Fr::from(0u64)];
+        let zero_result = fixed_base_vector_msm_g1(&base, &zero_scalar);
+        assert_eq!(zero_result[0], G1Projective::zero());
+
+        // Test with empty vector
+        let empty_scalars: Vec<Fr> = vec![];
+        let empty_result = fixed_base_vector_msm_g1(&base, &empty_scalars);
+        assert!(empty_result.is_empty());
     }
 }

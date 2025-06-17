@@ -9,7 +9,8 @@ use ark_ec::PrimeGroup;
 
 use jolt_optimizations::{
     vector_scalar_mul_add, vector_scalar_mul_add_online, vector_scalar_mul_add_precomputed,
-    VectorScalarMulData,
+    vector_scalar_mul_v_add_g_online, vector_scalar_mul_v_add_g_precomputed,
+    VectorScalarMulData, VectorScalarMulVData,
 };
 
 fn bench_vector_scalar_mul_add(c: &mut Criterion) {
@@ -198,9 +199,103 @@ fn bench_amortized_scalar_mul(c: &mut Criterion) {
     group.finish();
 }
 
+// Benchmark the new v[i] = scalar * v[i] + generators[i] operations
+fn bench_vector_scalar_mul_v_add_g(c: &mut Criterion) {
+    let mut rng = test_rng();
+
+    // Test with different vector sizes
+    let vector_sizes = [1000];
+
+    for &size in &vector_sizes {
+        // Generate test data
+        let generators: Vec<G2Projective> = (0..size)
+            .map(|_| G2Affine::rand(&mut rng).into_group())
+            .collect();
+        let scalar = Fr::rand(&mut rng);
+
+        // Initial values for the vector
+        let initial_values: Vec<G2Projective> = (0..size)
+            .map(|_| G2Affine::rand(&mut rng).into_group())
+            .collect();
+
+        let mut group = c.benchmark_group(format!("vector_scalar_mul_v_add_g_{}", size));
+
+        // Benchmark naive approach: v[i] = scalar * v[i] + generators[i]
+        group.bench_with_input(
+            BenchmarkId::new("naive", size),
+            &(&generators, &scalar, &initial_values),
+            |b, &(generators, scalar, initial_values)| {
+                b.iter(|| {
+                    let mut v = initial_values.clone();
+                    // Naive implementation: v[i] = scalar * v[i] + generators[i]
+                    for (v_i, g_i) in v.iter_mut().zip(generators.iter()) {
+                        *v_i = v_i.mul_bigint(scalar.into_bigint()) + g_i;
+                    }
+                    black_box(v)
+                })
+            },
+        );
+
+        // Benchmark online GLV version
+        group.bench_with_input(
+            BenchmarkId::new("glv_online", size),
+            &(&generators, &scalar, &initial_values),
+            |b, &(generators, scalar, initial_values)| {
+                b.iter(|| {
+                    let mut v = initial_values.clone();
+                    vector_scalar_mul_v_add_g_online(&mut v, generators, *scalar);
+                    black_box(v)
+                })
+            },
+        );
+
+        // Benchmark precomputed GLV version (not counting precomputation time)
+        let precomputed_v_data = VectorScalarMulVData::new(scalar);
+        group.bench_with_input(
+            BenchmarkId::new("glv_precomputed", size),
+            &(&precomputed_v_data, &generators, &initial_values),
+            |b, &(data, generators, initial_values)| {
+                b.iter(|| {
+                    let mut v = initial_values.clone();
+                    vector_scalar_mul_v_add_g_precomputed(&mut v, generators, data);
+                    black_box(v)
+                })
+            },
+        );
+
+        // Benchmark precomputed GLV with precomputation time included
+        group.bench_with_input(
+            BenchmarkId::new("glv_precomputed_with_setup", size),
+            &(&generators, &scalar, &initial_values),
+            |b, &(generators, scalar, initial_values)| {
+                b.iter_custom(|iters| {
+                    let mut total_time = std::time::Duration::default();
+
+                    for _ in 0..iters {
+                        let mut v = initial_values.clone();
+
+                        // Time includes both precomputation and multiplication
+                        let start = Instant::now();
+                        let data = VectorScalarMulVData::new(*scalar);
+                        vector_scalar_mul_v_add_g_precomputed(&mut v, generators, &data);
+                        total_time += start.elapsed();
+
+                        black_box(v);
+                    }
+
+                    total_time
+                })
+            },
+        );
+
+        group.finish();
+    }
+}
+
 criterion_group!(
     benches,
     bench_vector_scalar_mul_add,
-    bench_amortized_scalar_mul
+    bench_amortized_scalar_mul,
+    bench_vector_scalar_mul_v_add_g
 );
 criterion_main!(benches);
