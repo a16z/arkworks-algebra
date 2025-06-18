@@ -9,7 +9,7 @@ fn main() {
     let mut rng = test_rng();
     
     // Test with different numbers of pairs
-    for num_pairs in [10000] {
+    for num_pairs in [100] {
         println!("\nTesting with {} pairs:", num_pairs);
         
         // Create test points
@@ -20,16 +20,29 @@ fn main() {
             .map(|_| G2Affine::rand(&mut rng))
             .collect();
         
-        // Time the multi_pairing
+        // Time the original multi_miller_loop
         let start = std::time::Instant::now();
-        let _result = Bn254::multi_pairing(&g1_points, &g2_points);
-        let elapsed = start.elapsed();
+        let miller_result1 = Bn254::multi_miller_loop(&g1_points, &g2_points);
+        let elapsed_original = start.elapsed();
         
-        println!("  Multi-pairing took: {:?}", elapsed);
-        println!("  Average per pair: {:?}", elapsed / num_pairs as u32);
-
-        // ~ 100 microseconds per, 200 single threaded
+        // Time the optimized multi_miller_loop
+        let start = std::time::Instant::now();
+        let miller_result2 = Bn254::multi_miller_loop_optimized(&g1_points, &g2_points);
+        let elapsed_optimized = start.elapsed();
+        
+        // Apply final exponentiation to both results
+        let result1 = Bn254::final_exponentiation(miller_result1).unwrap();
+        let result2 = Bn254::final_exponentiation(miller_result2).unwrap();
+        
+        // Verify results match
+        assert_eq!(result1, result2, "Results don't match for {} pairs!", num_pairs);
+        
+        println!("  Original multi_miller_loop: {:?}", elapsed_original);
+        println!("  Optimized multi_miller_loop: {:?}", elapsed_optimized);
+        println!("  Speedup: {:.2}x", elapsed_original.as_secs_f64() / elapsed_optimized.as_secs_f64());
+        println!("  Average per pair (original): {:?}", elapsed_original / num_pairs as u32);
+        println!("  Average per pair (optimized): {:?}", elapsed_optimized / num_pairs as u32);
     }
     
-    println!("\nTest completed!");
+    println!("\nTest completed! All results match.");
 }
