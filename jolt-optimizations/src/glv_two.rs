@@ -66,7 +66,7 @@ pub(crate) fn shamir_glv_mul_2d(
 // ============================================================================
 
 /// Precomputed data for 2D GLV with Shamir table
-#[derive(CanonicalSerialize, CanonicalDeserialize)]
+#[derive(Clone, Debug, CanonicalSerialize, CanonicalDeserialize)]
 pub struct PrecomputedShamir2Data {
     pub shamir_tables: Vec<PrecomputedShamir2Table>,
 }
