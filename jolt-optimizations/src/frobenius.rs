@@ -56,4 +56,3 @@ pub fn frobenius_psi_power_affine(p: &G2Affine, k: usize) -> G2Affine {
     let projective_result = frobenius_psi_power_projective(&p.into_group(), k);
     projective_result.into_affine()
 }
-

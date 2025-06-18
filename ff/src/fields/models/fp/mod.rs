@@ -101,7 +101,7 @@ pub trait FpConfig<const N: usize>: Send + Sync + 'static + Sized {
     /// 1)`.
     fn into_bigint(other: Fp<Self, N>) -> BigInt<N>;
 
-    /// Creates a field element from a `u64`. 
+    /// Creates a field element from a `u64`.
     /// Returns `None` if the `u64` is larger than or equal to the modulus.
     fn from_u64(val: u64) -> Option<Fp<Self, N>>;
 }

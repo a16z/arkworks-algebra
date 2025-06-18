@@ -289,12 +289,12 @@ impl<const N: usize> BigInt<N> {
         let msb = self.0[N - 1];
         let mut count = 0;
         let mut mask = 1u64 << 63; // Start with the highest bit
-        
+
         while count < 64 && (msb & mask) == 0 {
             count += 1;
             mask >>= 1;
         }
-        
+
         count
     }
 

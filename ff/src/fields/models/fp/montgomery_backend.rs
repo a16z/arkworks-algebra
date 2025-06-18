@@ -159,9 +159,10 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
     const BARRETT_MU: u64 = {
         // Compute Barrett mu = floor(2^(modulus_bits + 63) / modulus)
         assert!(Self::MODULUS.num_spare_bits() < 64);
-        let r_times_r_prime_over_2 =
-            crate::const_helpers::RBuffer::<N>([0u64; N],
-                1 << (63 - Self::MODULUS.num_spare_bits()));
+        let r_times_r_prime_over_2 = crate::const_helpers::RBuffer::<N>(
+            [0u64; N],
+            1 << (63 - Self::MODULUS.num_spare_bits()),
+        );
         // Use const_quotient! to compute the quotient
         let result: BigInt<N> = const_quotient!(r_times_r_prime_over_2, &Self::MODULUS);
         // Result should be a u64
@@ -915,7 +916,7 @@ impl<T: MontConfig<N>, const N: usize> Fp<MontBackend<T, N>, N> {
     pub fn mul_u64(self, other: u64) -> Self {
         // Stage 1: Bignum Multiplication
         // Compute c = self.0 * other. Result c has N+1 limbs.
-        let c = bigint_mul_by_u64(&self.0.0, other);
+        let c = bigint_mul_by_u64(&self.0 .0, other);
 
         // Stage 2: Barrett Reduction
         let r = barrett_reduce_nplus1_to_n::<T, N>(c);
@@ -1140,12 +1141,12 @@ fn sub_bigint_plus_one_prime<const N: usize>(
     // This loop covers indices i = 1 to N-1.
     // It uses a_hi_n limbs from index 0 to N-2.
     for i in 1..N {
-        result_lo_n[i] = a_hi_n[i-1]; // Initialize result limb with corresponding a limb
+        result_lo_n[i] = a_hi_n[i - 1]; // Initialize result limb with corresponding a limb
         borrow = fa::sbb(&mut result_lo_n[i], b_lo_n[i], borrow); // result_lo_n[i] -= b_lo_n[i] + borrow
     }
 
     // Subtract high limb: result_hi = a_hi_n[N-1] - b_hi - borrow
-    let mut result_hi = a_hi_n[N-1]; // Initialize result limb with last a limb
+    let mut result_hi = a_hi_n[N - 1]; // Initialize result limb with last a limb
     borrow = fa::sbb(&mut result_hi, b_hi, borrow); // result_hi -= b_hi + borrow
 
     let final_borrow_occurred = borrow != 0;
@@ -1228,7 +1229,9 @@ fn bigint_mul_by_u128<const N: usize>(val: &BigInt<N>, other: u128) -> ([u64; 2]
 /// Old conditional subtraction logic for Barrett reduction
 /// Takes an N+1 limb intermediate result `r_tmp` and returns the N-limb final result.
 #[inline(always)]
-fn _barrett_cond_subtract_old<T: MontConfig<N>, const N: usize>(r_tmp: ([u64; N], u64)) -> [u64; N] {
+fn _barrett_cond_subtract_old<T: MontConfig<N>, const N: usize>(
+    r_tmp: ([u64; N], u64),
+) -> [u64; N] {
     let mut current_r = r_tmp; // Working variable in ([u64; N], u64) format
 
     if T::MODULUS_NUM_SPARE_BITS >= 1 {
@@ -1236,11 +1239,17 @@ fn _barrett_cond_subtract_old<T: MontConfig<N>, const N: usize>(r_tmp: ([u64; N]
         if T::MODULUS_NUM_SPARE_BITS >= 2 {
             // Optimization for S >= 2: r_tmp = c - m*2p < 4p
             // High limb of current_r should initially be 0
-            debug_assert!(current_r.1 == 0, "High limb of r_tmp should be zero when S >= 2");
+            debug_assert!(
+                current_r.1 == 0,
+                "High limb of r_tmp should be zero when S >= 2"
+            );
 
             // Conditional subtraction 1 (if r >= 2P) using N+1 compare/sub
-            if compare_bigint_plus_one(current_r, T::MODULUS_TIMES_2_NPLUS1) != core::cmp::Ordering::Less {
-                let (sub_res, sub_borrow) = sub_bigint_plus_one(current_r, T::MODULUS_TIMES_2_NPLUS1);
+            if compare_bigint_plus_one(current_r, T::MODULUS_TIMES_2_NPLUS1)
+                != core::cmp::Ordering::Less
+            {
+                let (sub_res, sub_borrow) =
+                    sub_bigint_plus_one(current_r, T::MODULUS_TIMES_2_NPLUS1);
                 debug_assert!(!sub_borrow, "Borrow should not occur subtracting 2P (S>=2)");
                 current_r = sub_res;
             }
@@ -1251,26 +1260,42 @@ fn _barrett_cond_subtract_old<T: MontConfig<N>, const N: usize>(r_tmp: ([u64; N]
                 current_r = sub_res;
             }
             // Result must fit in N limbs now
-            debug_assert!(current_r.1 == 0, "High limb must be zero after final subtraction (S>=2)");
+            debug_assert!(
+                current_r.1 == 0,
+                "High limb must be zero after final subtraction (S>=2)"
+            );
             current_r.0 // Return N low limbs
         } else {
             // Case S == 1: r_tmp = c - m*2p might temporarily exceed N limbs initially
 
             // Conditional subtraction 1: if r >= 2p
-            if compare_bigint_plus_one(current_r, T::MODULUS_TIMES_2_NPLUS1) != core::cmp::Ordering::Less {
+            if compare_bigint_plus_one(current_r, T::MODULUS_TIMES_2_NPLUS1)
+                != core::cmp::Ordering::Less
+            {
                 // Subtract 2P using N+1 limb subtraction
-                let (sub_res, sub_borrow) = sub_bigint_plus_one(current_r, T::MODULUS_TIMES_2_NPLUS1);
+                let (sub_res, sub_borrow) =
+                    sub_bigint_plus_one(current_r, T::MODULUS_TIMES_2_NPLUS1);
                 // After subtracting 2P, the result MUST fit in N limbs
-                debug_assert!(sub_res.1 == 0, "High limb must be 0 after 2P subtraction when S=1");
-                debug_assert!(!sub_borrow, "Borrow should not occur when subtracting 2P for S=1");
+                debug_assert!(
+                    sub_res.1 == 0,
+                    "High limb must be 0 after 2P subtraction when S=1"
+                );
+                debug_assert!(
+                    !sub_borrow,
+                    "Borrow should not occur when subtracting 2P for S=1"
+                );
                 current_r = sub_res; // Update current_r (now guaranteed to have high limb 0)
             }
             // At this point, current_r < 2P and its high limb is 0.
-            debug_assert!(current_r.1 == 0, "High limb should be 0 before N-limb subtraction (S=1)");
+            debug_assert!(
+                current_r.1 == 0,
+                "High limb should be 0 before N-limb subtraction (S=1)"
+            );
             let mut r_n_limbs = BigInt::<N>(current_r.0); // Extract N low limbs
 
             // Conditional subtraction 2 (if r >= P) using N limbs directly
-            if r_n_limbs >= T::MODULUS { // Compare N limbs
+            if r_n_limbs >= T::MODULUS {
+                // Compare N limbs
                 r_n_limbs.sub_with_borrow(&T::MODULUS); // Subtract N limbs. Ignore borrow.
             }
             r_n_limbs.0 // Return N low limbs
@@ -1279,7 +1304,9 @@ fn _barrett_cond_subtract_old<T: MontConfig<N>, const N: usize>(r_tmp: ([u64; N]
         // Case S == 0: Use (N+1)-limb helpers throughout
 
         // Conditional subtraction 1: if r >= 2p
-        if compare_bigint_plus_one(current_r, T::MODULUS_TIMES_2_NPLUS1) != core::cmp::Ordering::Less {
+        if compare_bigint_plus_one(current_r, T::MODULUS_TIMES_2_NPLUS1)
+            != core::cmp::Ordering::Less
+        {
             let (sub_res, sub_borrow) = sub_bigint_plus_one(current_r, T::MODULUS_TIMES_2_NPLUS1);
             debug_assert!(!sub_borrow, "Borrow should not occur subtracting 2P (S=0)");
             current_r = sub_res;
@@ -1287,15 +1314,25 @@ fn _barrett_cond_subtract_old<T: MontConfig<N>, const N: usize>(r_tmp: ([u64; N]
         // Now current_r = c mod 2p, represented as ([u64; N], u64)
 
         // Conditional subtraction 2: if r >= p
-        if compare_bigint_plus_one(current_r, T::MODULUS_NPLUS1) != core::cmp::Ordering::Less { // if r >= p
-                let (sub_res, sub_borrow) = sub_bigint_plus_one(current_r, T::MODULUS_NPLUS1);
-                // Result MUST fit in N limbs now
-                debug_assert!(sub_res.1 == 0, "High limb must be zero after subtracting P (S=0)");
-                debug_assert!(!sub_borrow, "Borrow should not occur when subtracting P for S=0");
-                current_r = sub_res;
+        if compare_bigint_plus_one(current_r, T::MODULUS_NPLUS1) != core::cmp::Ordering::Less {
+            // if r >= p
+            let (sub_res, sub_borrow) = sub_bigint_plus_one(current_r, T::MODULUS_NPLUS1);
+            // Result MUST fit in N limbs now
+            debug_assert!(
+                sub_res.1 == 0,
+                "High limb must be zero after subtracting P (S=0)"
+            );
+            debug_assert!(
+                !sub_borrow,
+                "Borrow should not occur when subtracting P for S=0"
+            );
+            current_r = sub_res;
         }
         // At this point, current_r < P and its high limb must be 0.
-        debug_assert!(current_r.1 == 0, "High limb must be zero after final subtraction (S=0)");
+        debug_assert!(
+            current_r.1 == 0,
+            "High limb must be zero after final subtraction (S=0)"
+        );
         current_r.0 // Return N low limbs
     }
 }
@@ -1317,61 +1354,85 @@ fn barrett_cond_subtract<T: MontConfig<N>, const N: usize>(r_tmp: ([u64; N], u64
     } else {
         // S >= 1: 2p fits N limbs (mostly). Compare N limbs.
         // We assume r_tmp's high limb is 0 here if S >= 1.
-        debug_assert!(r_hi == 0, "High limb expected to be 0 if S >= 1 before 2p comparison");
+        debug_assert!(
+            r_hi == 0,
+            "High limb expected to be 0 if S >= 1 before 2p comparison"
+        );
         let p2_n = BigInt::<N>(T::MODULUS_TIMES_2_NPLUS1.0);
         r_n.cmp(&p2_n)
     };
 
-    if compare_2p != core::cmp::Ordering::Less { // r_tmp >= 2p
+    if compare_2p != core::cmp::Ordering::Less {
+        // r_tmp >= 2p
         // Compare with 3p
         let compare_3p = if T::MODULUS_NUM_SPARE_BITS < 2 {
-             // S < 2 (S=0 or S=1): Need N+1 compare
+            // S < 2 (S=0 or S=1): Need N+1 compare
             compare_bigint_plus_one(r_tmp, T::MODULUS_TIMES_3_NPLUS1)
         } else {
             // S >= 2: 3p fits N limbs. Compare N limbs.
-            debug_assert!(r_hi == 0, "High limb expected to be 0 if S >= 2 before 3p comparison");
+            debug_assert!(
+                r_hi == 0,
+                "High limb expected to be 0 if S >= 2 before 3p comparison"
+            );
             let p3_n = BigInt::<N>(T::MODULUS_TIMES_3_NPLUS1.0);
             r_n.cmp(&p3_n)
         };
 
-        if compare_3p != core::cmp::Ordering::Less { // r_tmp >= 3p
+        if compare_3p != core::cmp::Ordering::Less {
+            // r_tmp >= 3p
             // Subtract 3p
             if T::MODULUS_NUM_SPARE_BITS >= 2 {
                 // S >= 2: 3p fits N limbs. Use N-limb sub.
-                debug_assert!(r_hi == 0, "High limb expected to be 0 if S >= 2 for 3p subtraction");
+                debug_assert!(
+                    r_hi == 0,
+                    "High limb expected to be 0 if S >= 2 for 3p subtraction"
+                );
                 let p3_n = BigInt::<N>(T::MODULUS_TIMES_3_NPLUS1.0);
                 let (res_n, borrow_n) = r_n.const_sub_with_borrow(&p3_n);
                 debug_assert!(!borrow_n, "Borrow should not occur subtracting 3p (S>=2)");
                 final_limbs = res_n.0;
             } else {
                 // S < 2: Use N+1 limb sub.
-                let ((res_n_limbs, res_hi_limb), borrow_n1) = sub_bigint_plus_one(r_tmp, T::MODULUS_TIMES_3_NPLUS1);
+                let ((res_n_limbs, res_hi_limb), borrow_n1) =
+                    sub_bigint_plus_one(r_tmp, T::MODULUS_TIMES_3_NPLUS1);
                 debug_assert!(!borrow_n1, "Borrow should not occur subtracting 3p (S<2)");
-                debug_assert!(res_hi_limb == 0, "High limb must be zero after subtracting 3p");
+                debug_assert!(
+                    res_hi_limb == 0,
+                    "High limb must be zero after subtracting 3p"
+                );
                 final_limbs = res_n_limbs;
             }
-        } else { // 2p <= r_tmp < 3p
+        } else {
+            // 2p <= r_tmp < 3p
             // Subtract 2p
             if T::MODULUS_NUM_SPARE_BITS >= 1 {
                 // S >= 1: 2p fits N limbs (mostly). Use N-limb sub.
-                debug_assert!(r_hi == 0, "High limb expected to be 0 if S >= 1 for 2p subtraction");
+                debug_assert!(
+                    r_hi == 0,
+                    "High limb expected to be 0 if S >= 1 for 2p subtraction"
+                );
                 let p2_n = BigInt::<N>(T::MODULUS_TIMES_2_NPLUS1.0);
                 let (res_n, borrow_n) = r_n.const_sub_with_borrow(&p2_n);
                 debug_assert!(!borrow_n, "Borrow should not occur subtracting 2p (S>=1)");
                 final_limbs = res_n.0;
             } else {
                 // S == 0: Use N+1 limb sub.
-                let ((res_n_limbs, res_hi_limb), borrow_n1) = sub_bigint_plus_one(r_tmp, T::MODULUS_TIMES_2_NPLUS1);
+                let ((res_n_limbs, res_hi_limb), borrow_n1) =
+                    sub_bigint_plus_one(r_tmp, T::MODULUS_TIMES_2_NPLUS1);
                 debug_assert!(!borrow_n1, "Borrow should not occur subtracting 2p (S=0)");
-                debug_assert!(res_hi_limb == 0, "High limb must be zero after subtracting 2p");
+                debug_assert!(
+                    res_hi_limb == 0,
+                    "High limb must be zero after subtracting 2p"
+                );
                 final_limbs = res_n_limbs;
             }
         }
-    } else { // r_tmp < 2p
+    } else {
+        // r_tmp < 2p
         // Compare with p
         let compare_p = if T::MODULUS_NUM_SPARE_BITS >= 1 {
             // S >= 1: Use N-limb compare.
-             // Assume r_tmp high limb is 0 because r_tmp < 2p and 2p fits N limbs (mostly) if S >= 1
+            // Assume r_tmp high limb is 0 because r_tmp < 2p and 2p fits N limbs (mostly) if S >= 1
             debug_assert!(r_hi == 0, "High limb expected to be 0 if S >= 1 and r < 2p");
             r_n.cmp(&T::MODULUS) // Compare N limbs
         } else {
@@ -1379,22 +1440,31 @@ fn barrett_cond_subtract<T: MontConfig<N>, const N: usize>(r_tmp: ([u64; N], u64
             compare_bigint_plus_one(r_tmp, T::MODULUS_NPLUS1)
         };
 
-        if compare_p != core::cmp::Ordering::Less { // p <= r_tmp < 2p
+        if compare_p != core::cmp::Ordering::Less {
+            // p <= r_tmp < 2p
             // Subtract p
             if T::MODULUS_NUM_SPARE_BITS >= 1 {
                 // S >= 1: Use N-limb sub.
-                debug_assert!(r_hi == 0, "High limb expected to be 0 if S >= 1 for p subtraction");
+                debug_assert!(
+                    r_hi == 0,
+                    "High limb expected to be 0 if S >= 1 for p subtraction"
+                );
                 let (res_n, borrow_n) = r_n.const_sub_with_borrow(&T::MODULUS);
                 debug_assert!(!borrow_n, "Borrow should not occur subtracting p (S>=1)");
                 final_limbs = res_n.0;
             } else {
                 // S == 0: Use N+1 limb sub.
-                 let ((res_n_limbs, res_hi_limb), borrow_n1) = sub_bigint_plus_one(r_tmp, T::MODULUS_NPLUS1);
-                 debug_assert!(!borrow_n1, "Borrow should not occur subtracting p (S=0)");
-                 debug_assert!(res_hi_limb == 0, "High limb must be zero after subtracting p");
+                let ((res_n_limbs, res_hi_limb), borrow_n1) =
+                    sub_bigint_plus_one(r_tmp, T::MODULUS_NPLUS1);
+                debug_assert!(!borrow_n1, "Borrow should not occur subtracting p (S=0)");
+                debug_assert!(
+                    res_hi_limb == 0,
+                    "High limb must be zero after subtracting p"
+                );
                 final_limbs = res_n_limbs;
             }
-        } else { // r_tmp < p
+        } else {
+            // r_tmp < p
             // Subtract 0 (No-op)
             // Result must already fit in N limbs. Assert high limb is 0.
             debug_assert!(r_hi == 0, "High limb must be zero when r_tmp < p");
@@ -1418,11 +1488,12 @@ fn barrett_reduce_nplus1_to_n<T: MontConfig<N>, const N: usize>(c: (u64, [u64; N
     // The highest limb is c_hi[N-1]. The second highest is c_hi[N-2].
     // Assume that `N >= 1`
     let tilde_c: u64 = if T::MODULUS_HAS_SPARE_BIT {
-        let high_limb = c_hi[N-1];
-        let second_high_limb = if N > 1 { c_hi[N-2] } else { c_lo }; // Use c_lo if N=1
-        (high_limb << T::MODULUS_NUM_SPARE_BITS) + (second_high_limb >> (64 - T::MODULUS_NUM_SPARE_BITS))
+        let high_limb = c_hi[N - 1];
+        let second_high_limb = if N > 1 { c_hi[N - 2] } else { c_lo }; // Use c_lo if N=1
+        (high_limb << T::MODULUS_NUM_SPARE_BITS)
+            + (second_high_limb >> (64 - T::MODULUS_NUM_SPARE_BITS))
     } else {
-        c_hi[N-1] // If no spare bits, tilde_c is just the highest limb
+        c_hi[N - 1] // If no spare bits, tilde_c is just the highest limb
     };
 
     // Estimate m = floor( (tilde_c * BARRETT_MU) / r )
@@ -1430,10 +1501,7 @@ fn barrett_reduce_nplus1_to_n<T: MontConfig<N>, const N: usize>(c: (u64, [u64; N
     let m: u64 = ((tilde_c as u128 * T::BARRETT_MU as u128) >> 64) as u64;
 
     // Compute m * 2p (N+1 limbs)
-    let (m_times_2p, m2p_overflow) = bigint_plus_one_mul_by_u64::<N>(
-        T::MODULUS_TIMES_2_NPLUS1,
-        m,
-    );
+    let (m_times_2p, m2p_overflow) = bigint_plus_one_mul_by_u64::<N>(T::MODULUS_TIMES_2_NPLUS1, m);
     // If m * 2p overflows N+1 limbs, the logic might be flawed or input c was too large.
     debug_assert!(!m2p_overflow, "Overflow calculating m * 2p");
 
@@ -1448,11 +1516,11 @@ fn barrett_reduce_nplus1_to_n<T: MontConfig<N>, const N: usize>(c: (u64, [u64; N
 
 #[cfg(test)]
 mod test {
-    use ark_std::{str::FromStr, vec::*, UniformRand, test_rng};
+    use ark_std::{str::FromStr, test_rng, vec::*, UniformRand};
+    use ark_test_curves::ark_ff::BigInt as ArkBigInt;
     use ark_test_curves::bn254::Fr;
     use num_bigint::{BigInt, BigUint, Sign};
     use rand::Rng;
-    use ark_test_curves::ark_ff::BigInt as ArkBigInt;
 
     #[test]
     fn test_mul_u64_random() {
@@ -1460,14 +1528,14 @@ mod test {
         for _ in 0..100 {
             let a = Fr::rand(&mut rng);
             let b_val: u64 = rng.gen();
-            
+
             // Expected result using standard field multiplication
             let b_bigint = ArkBigInt::from(b_val);
             let expected_c = a * Fr::from(b_bigint);
-            
+
             // Actual result using the function under test
             let result_c = a.mul_u64(b_val);
-            
+
             assert_eq!(
                 result_c,
                 expected_c,
@@ -1497,8 +1565,7 @@ mod test {
             let result_c = a.mul_i64(b_val);
 
             assert_eq!(
-                result_c,
-                expected_c,
+                result_c, expected_c,
                 "mul_i64 failed: a = {}, b = {}\nGot:      {}\nExpected: {}",
                 a, b_val, result_c, expected_c
             );
@@ -1520,8 +1587,7 @@ mod test {
             let result_c = a.mul_u128(b_val);
 
             assert_eq!(
-                result_c,
-                expected_c,
+                result_c, expected_c,
                 "mul_u128 failed: a = {}, b = {}\nGot:      {}\nExpected: {}",
                 a, b_val, result_c, expected_c
             );
@@ -1534,7 +1600,7 @@ mod test {
         for _ in 0..100 {
             let a = Fr::rand(&mut rng);
             // Avoid i128::MIN as negation overflows
-            let b_val: i128 = rng.gen_range(i128::MIN + 1 ..= i128::MAX);
+            let b_val: i128 = rng.gen_range(i128::MIN + 1..=i128::MAX);
 
             // Expected result using standard field multiplication
             let expected_c = if b_val >= 0 {
@@ -1549,8 +1615,7 @@ mod test {
             let result_c = a.mul_i128(b_val);
 
             assert_eq!(
-                result_c,
-                expected_c,
+                result_c, expected_c,
                 "mul_i128 failed: a = {}, b = {}\nGot:      {}\nExpected: {}",
                 a, b_val, result_c, expected_c
             );

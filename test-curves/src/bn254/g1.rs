@@ -1,8 +1,6 @@
-use ark_ec::models::short_weierstrass::{
-    Affine, Projective, SWCurveConfig,
-};
+use ark_ec::models::short_weierstrass::{Affine, Projective, SWCurveConfig};
 use ark_ec::CurveConfig;
-use ark_ff::{Field, MontFp, Zero, AdditiveGroup};
+use ark_ff::{AdditiveGroup, Field, MontFp, Zero};
 
 use crate::bn254::{Fq, Fr}; // Assuming Fq is defined in fq.rs
 

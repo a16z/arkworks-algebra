@@ -4,14 +4,11 @@
 //! 2-dimensional GLV decomposition with the Shamir trick and precomputed lookup tables.
 
 use ark_bn254::{Fq, Fr, G1Projective};
-use ark_ec::{AdditiveGroup, PrimeGroup};
 use ark_ff::{BigInteger, MontFp, PrimeField};
 use ark_std::ops::{AddAssign, Neg};
-use ark_std::Zero;
 use num_bigint::{BigInt, BigUint, Sign};
 use num_integer::Integer;
 use num_traits::{One, Signed};
-use rayon::prelude::*;
 
 /// GLV lambda for BN254 G1 (from arkworks v0.5)
 const LAMBDA: Fr =

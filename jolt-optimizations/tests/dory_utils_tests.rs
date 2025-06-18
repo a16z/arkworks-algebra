@@ -5,8 +5,8 @@ use ark_std::{test_rng, Zero};
 
 use jolt_optimizations::{
     vector_scalar_mul_add, vector_scalar_mul_add_online, vector_scalar_mul_add_precomputed,
-    vector_scalar_mul_v_add_g_online, vector_scalar_mul_v_add_g_precomputed, 
-    VectorScalarMulData, VectorScalarMulVData,
+    vector_scalar_mul_v_add_g_online, vector_scalar_mul_v_add_g_precomputed, VectorScalarMulData,
+    VectorScalarMulVData,
 };
 
 #[test]

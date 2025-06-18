@@ -405,16 +405,14 @@ macro_rules! prime_field {
                     f[i].into_bigint()
                 })
             });
-            let u64s = (0..SAMPLES)
-                .map(|_| rng.next_u64())
-                .collect::<Vec<_>>();
+            let u64s = (0..SAMPLES).map(|_| rng.next_u64()).collect::<Vec<_>>();
             conversions.bench_function("From u64", |b| {
                 let mut i = 0;
                 b.iter(|| {
                     i = (i + 1) % SAMPLES;
                     <$F>::from_u64(u64s[i])
                 })
-            }); 
+            });
             conversions.finish()
         }
     };

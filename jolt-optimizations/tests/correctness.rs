@@ -5,9 +5,9 @@ use ark_ec::{AdditiveGroup, AffineRepr};
 use ark_ff::{PrimeField, UniformRand};
 use ark_std::test_rng;
 use jolt_optimizations::{
-    glv_four_precompute, glv_four_precompute_windowed, glv_four_precompute_windowed2_compact,
-    glv_four_precompute_windowed2_signed, glv_four_scalar_mul, glv_four_scalar_mul_online,
-    glv_four_scalar_mul_windowed, glv_four_scalar_mul_windowed2_signed,
+    glv_four_precompute, glv_four_precompute_windowed2_signed, 
+    glv_four_scalar_mul, glv_four_scalar_mul_online,
+    glv_four_scalar_mul_windowed2_signed,
 };
 
 /// Helper function to perform naive scalar multiplication
@@ -88,38 +88,6 @@ fn test_all_methods_correctness() {
             );
         }
         println!("  ✓ Precomputed method passed");
-
-        // Test windowed method (performance champion) with debugging
-        let windowed_data = glv_four_precompute_windowed(&points);
-        let windowed_results = glv_four_scalar_mul_windowed(&windowed_data, scalar);
-        assert_eq!(
-            windowed_results.len(),
-            naive_results.len(),
-            "Windowed method: wrong number of results"
-        );
-        for (i, (naive, glv)) in naive_results
-            .iter()
-            .zip(windowed_results.iter())
-            .enumerate()
-        {
-            if !points_equal(naive, glv) {
-                println!("WINDOWED DEBUG: Test case {}, Point {}", test_case, i);
-                println!("  Scalar: {:?}", scalar);
-                println!("  Input point: {:?}", points[i]);
-                println!("  Naive result: {:?}", naive);
-                println!("  Windowed result: {:?}", glv);
-                println!("  Naive affine: {:?}", naive.into_affine());
-                println!("  Windowed affine: {:?}", glv.into_affine());
-            }
-            assert!(
-                points_equal(naive, glv),
-                "Windowed method: Point {} mismatch. Naive: {:?}, GLV: {:?}",
-                i,
-                naive,
-                glv
-            );
-        }
-        println!("  ✓ Windowed method passed");
 
         // Test 2-bit signed method (memory champion)
         let windowed2_signed_data = glv_four_precompute_windowed2_signed(&points);
@@ -208,16 +176,6 @@ fn test_edge_cases() {
             );
         }
 
-        let windowed_data = glv_four_precompute_windowed(&points);
-        let windowed_results = glv_four_scalar_mul_windowed(&windowed_data, scalar);
-        for (naive, glv) in naive_results.iter().zip(windowed_results.iter()) {
-            assert!(
-                points_equal(naive, glv),
-                "Edge case failed for windowed method with scalar {:?}",
-                scalar
-            );
-        }
-
         let windowed2_signed_data = glv_four_precompute_windowed2_signed(&points);
         let windowed2_signed_results =
             glv_four_scalar_mul_windowed2_signed(&windowed2_signed_data, scalar);
@@ -279,21 +237,6 @@ fn test_large_scalars() {
             assert!(
                 points_equal(naive, glv),
                 "Large scalar test failed for precomputed method: point {}, scalar {:?}",
-                j,
-                scalar
-            );
-        }
-
-        let windowed_data = glv_four_precompute_windowed(&points);
-        let windowed_results = glv_four_scalar_mul_windowed(&windowed_data, scalar);
-        for (j, (naive, glv)) in naive_results
-            .iter()
-            .zip(windowed_results.iter())
-            .enumerate()
-        {
-            assert!(
-                points_equal(naive, glv),
-                "Large scalar test failed for windowed method: point {}, scalar {:?}",
                 j,
                 scalar
             );

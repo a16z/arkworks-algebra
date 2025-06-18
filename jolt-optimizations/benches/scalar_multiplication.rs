@@ -8,9 +8,9 @@ use ark_ff::{PrimeField, UniformRand};
 use ark_std::test_rng;
 
 use jolt_optimizations::{
-    glv_four_precompute, glv_four_precompute_windowed, glv_four_precompute_windowed2_compact,
+    glv_four_precompute,
     glv_four_precompute_windowed2_signed, glv_four_scalar_mul, glv_four_scalar_mul_online,
-    glv_four_scalar_mul_windowed, glv_four_scalar_mul_windowed2_signed,
+    glv_four_scalar_mul_windowed2_signed,
 };
 
 fn bench_scalar_multiplication(c: &mut Criterion) {
@@ -19,17 +19,15 @@ fn bench_scalar_multiplication(c: &mut Criterion) {
     // Fix a random scalar for all tests
     let scalar = Fr::rand(&mut rng);
 
-    const NUM_TESTS: usize = 100000;
+    const NUM_TESTS: usize = 1000;
 
     // Generate random points
     let points: Vec<G2Projective> = (0..NUM_TESTS)
         .map(|_| G2Affine::rand(&mut rng).into_group())
         .collect();
 
-    let glv_precomputed = glv_four_precompute(&points);
-    let glv_windowed = glv_four_precompute_windowed(&points);
+    let glv_precomputed: jolt_optimizations::PrecomputedShamir4Data = glv_four_precompute(&points);
     let glv_windowed2_signed = glv_four_precompute_windowed2_signed(&points);
-    let glv_windowed2_compact = glv_four_precompute_windowed2_compact(&points);
 
     let mut group = c.benchmark_group("scalar_multiplication");
 
@@ -53,12 +51,6 @@ fn bench_scalar_multiplication(c: &mut Criterion) {
     );
 
     group.bench_with_input(
-        BenchmarkId::new("4d_windowed", NUM_TESTS),
-        &glv_windowed,
-        |b, glv_windowed| b.iter(|| black_box(glv_four_scalar_mul_windowed(glv_windowed, scalar))),
-    );
-
-    group.bench_with_input(
         BenchmarkId::new("4d_windowed2_signed", NUM_TESTS),
         &glv_windowed2_signed,
         |b, glv_windowed2_signed| {
@@ -70,19 +62,6 @@ fn bench_scalar_multiplication(c: &mut Criterion) {
             })
         },
     );
-
-    // group.bench_with_input(
-    //     BenchmarkId::new("4d_windowed2_compact", NUM_TESTS),
-    //     &glv_windowed2_compact,
-    //     |b, glv_windowed2_compact| {
-    //         b.iter(|| {
-    //             black_box(glv_four_scalar_mul_windowed2_compact(
-    //                 glv_windowed2_compact,
-    //                 scalar,
-    //             ))
-    //         })
-    //     },
-    // );
 
     group.finish();
 }

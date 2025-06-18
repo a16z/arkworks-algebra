@@ -6,12 +6,10 @@ use ark_std::{test_rng, Zero};
 use jolt_optimizations::{
     fixed_base_vector_msm_g1, glv_two_precompute, glv_two_precompute_windowed2_signed,
     glv_two_scalar_mul, glv_two_scalar_mul_online, glv_two_scalar_mul_windowed2_signed,
-    vector_scalar_mul_add_g1, vector_scalar_mul_add_g1_online,
-    vector_scalar_mul_add_g1_precomputed, vector_scalar_mul_v_add_g_g1_online,
-    vector_scalar_mul_v_add_g_g1_precomputed, DecomposedScalar2D, FixedBasePrecomputedG1,
-    VectorScalarMulG1Data, VectorScalarMulG1VData,
+    vector_add_scalar_mul_g1_online, vector_add_scalar_mul_g1_precomputed,
+    vector_add_scalar_mul_g1_windowed2_signed, vector_scalar_mul_add_gamma_g1_online,
+    DecomposedScalar2D, FixedBasePrecomputedG1, PrecomputedShamir2Data, Windowed2Signed2Data,
 };
-
 
 #[test]
 fn test_glv_two_consistency() {
@@ -80,18 +78,19 @@ fn test_g1_vector_scalar_mul_add() {
         .map(|_| G1Affine::rand(&mut rng).into_group())
         .collect();
     let mut v_precomputed = v_online.clone();
-    let mut v_convenience = v_online.clone();
+    let mut v_windowed2 = v_online.clone();
     let v_original = v_online.clone();
 
     // Test online version
-    vector_scalar_mul_add_g1_online(&mut v_online, &generators, scalar);
+    vector_add_scalar_mul_g1_online(&mut v_online, &generators, scalar);
 
     // Test precomputed version
-    let data = VectorScalarMulG1Data::new(&generators, scalar);
-    vector_scalar_mul_add_g1_precomputed(&mut v_precomputed, &data);
+    let precomputed_generators = PrecomputedShamir2Data::new(&generators);
+    vector_add_scalar_mul_g1_precomputed(&mut v_precomputed, scalar, &precomputed_generators);
 
-    // Test convenience function
-    vector_scalar_mul_add_g1(&mut v_convenience, &generators, scalar);
+    // Test windowed2 signed version
+    let windowed2_generators = Windowed2Signed2Data::new(&generators);
+    vector_add_scalar_mul_g1_windowed2_signed(&mut v_windowed2, scalar, &windowed2_generators);
 
     // Compare with naive computation
     for i in 0..num_points {
@@ -110,9 +109,9 @@ fn test_g1_vector_scalar_mul_add() {
             i
         );
         assert_eq!(
-            v_convenience[i].into_affine(),
+            v_windowed2[i].into_affine(),
             expected.into_affine(),
-            "Convenience version mismatch at index {}",
+            "Windowed2 version mismatch at index {}",
             i
         );
     }
@@ -128,20 +127,20 @@ fn test_g1_vector_edge_cases() {
     let v_original = v[0];
     let scalar = Fr::rand(&mut rng);
 
-    vector_scalar_mul_add_g1_online(&mut v, &generators, scalar);
+    vector_add_scalar_mul_g1_online(&mut v, &generators, scalar);
     let expected = v_original + generators[0].mul_bigint(scalar.into_bigint());
     assert_eq!(v[0].into_affine(), expected.into_affine());
 
     // Test with zero scalar
     let mut v_zero = vec![v_original];
     let scalar_zero = Fr::from(0u64);
-    vector_scalar_mul_add_g1_online(&mut v_zero, &generators, scalar_zero);
+    vector_add_scalar_mul_g1_online(&mut v_zero, &generators, scalar_zero);
     assert_eq!(v_zero[0], v_original);
 
     // Test with identity generator
     let identity_generators = vec![G1Projective::zero()];
     let mut v_identity = vec![v_original];
-    vector_scalar_mul_add_g1_online(&mut v_identity, &identity_generators, scalar);
+    vector_add_scalar_mul_g1_online(&mut v_identity, &identity_generators, scalar);
     assert_eq!(v_identity[0], v_original);
 }
 
@@ -151,7 +150,7 @@ fn test_g1_vector_scalar_mul_v_add_g() {
 
     // Generate test data
     let num_points = 10;
-    let generators: Vec<G1Projective> = (0..num_points)
+    let gamma: Vec<G1Projective> = (0..num_points)
         .map(|_| G1Affine::rand(&mut rng).into_group())
         .collect();
     let scalar = Fr::rand(&mut rng);
@@ -161,29 +160,18 @@ fn test_g1_vector_scalar_mul_v_add_g() {
         .map(|_| G1Affine::rand(&mut rng).into_group())
         .collect();
     let mut v_online = v_original.clone();
-    let mut v_precomputed = v_original.clone();
 
     // Test online version
-    vector_scalar_mul_v_add_g_g1_online(&mut v_online, &generators, scalar);
+    vector_scalar_mul_add_gamma_g1_online(&mut v_online, scalar, &gamma);
 
-    // Test precomputed version
-    let data = VectorScalarMulG1VData::new(scalar);
-    vector_scalar_mul_v_add_g_g1_precomputed(&mut v_precomputed, &generators, &data);
-
-    // Compare with naive computation: scalar * v[i] + generators[i]
+    // Compare with naive computation: scalar * v[i] + gamma[i]
     for i in 0..num_points {
-        let expected = v_original[i].mul_bigint(scalar.into_bigint()) + generators[i];
+        let expected = v_original[i].mul_bigint(scalar.into_bigint()) + gamma[i];
 
         assert_eq!(
             v_online[i].into_affine(),
             expected.into_affine(),
             "Online version mismatch at index {}",
-            i
-        );
-        assert_eq!(
-            v_precomputed[i].into_affine(),
-            expected.into_affine(),
-            "Precomputed version mismatch at index {}",
             i
         );
     }
@@ -194,26 +182,26 @@ fn test_g1_vector_v_add_g_edge_cases() {
     let mut rng = test_rng();
 
     // Test with single point
-    let generators = vec![G1Affine::rand(&mut rng).into_group()];
+    let gamma = vec![G1Affine::rand(&mut rng).into_group()];
     let mut v = vec![G1Affine::rand(&mut rng).into_group()];
     let v_original = v[0];
     let scalar = Fr::rand(&mut rng);
 
-    vector_scalar_mul_v_add_g_g1_online(&mut v, &generators, scalar);
-    let expected = v_original.mul_bigint(scalar.into_bigint()) + generators[0];
+    vector_scalar_mul_add_gamma_g1_online(&mut v, scalar, &gamma);
+    let expected = v_original.mul_bigint(scalar.into_bigint()) + gamma[0];
     assert_eq!(v[0].into_affine(), expected.into_affine());
 
     // Test with zero scalar
     let mut v_zero = vec![v_original];
     let scalar_zero = Fr::from(0u64);
-    vector_scalar_mul_v_add_g_g1_online(&mut v_zero, &generators, scalar_zero);
-    let expected_zero = generators[0]; // 0 * v + g = g
+    vector_scalar_mul_add_gamma_g1_online(&mut v_zero, scalar_zero, &gamma);
+    let expected_zero = gamma[0]; // 0 * v + gamma = gamma
     assert_eq!(v_zero[0].into_affine(), expected_zero.into_affine());
 
-    // Test with identity generator
-    let identity_generators = vec![G1Projective::zero()];
+    // Test with identity gamma
+    let identity_gamma = vec![G1Projective::zero()];
     let mut v_identity = vec![v_original];
-    vector_scalar_mul_v_add_g_g1_online(&mut v_identity, &identity_generators, scalar);
+    vector_scalar_mul_add_gamma_g1_online(&mut v_identity, scalar, &identity_gamma);
     let expected_identity = v_original.mul_bigint(scalar.into_bigint()); // scalar * v + 0 = scalar * v
     assert_eq!(v_identity[0].into_affine(), expected_identity.into_affine());
 }

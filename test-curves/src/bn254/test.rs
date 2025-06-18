@@ -2,7 +2,9 @@
 use ark_ec::{
     models::short_weierstrass::SWCurveConfig, // Keep this as G1 is SW
     pairing::Pairing,
-    AffineRepr, CurveGroup, PrimeGroup,
+    AffineRepr,
+    CurveGroup,
+    PrimeGroup,
 };
 use ark_ff::{Field, One, UniformRand, Zero};
 use ark_std::{rand::Rng, test_rng};

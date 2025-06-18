@@ -44,13 +44,9 @@ name = "dory_utils"
 harness = false
 
 [[bench]]
-name = "g1_scalar_multiplication"
+name = "dory_all"
 harness = false
 
 [[bench]]
-name = "g1_dory_utils"
+name = "g1_scalar_multiplication"
 harness = false
-
-[[example]]
-name = "fixed_base_msm"
-path = "examples/fixed_base_msm.rs"

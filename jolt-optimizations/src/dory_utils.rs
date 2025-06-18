@@ -7,12 +7,10 @@ use ark_bn254::{Fr, G2Projective};
 use ark_ff::PrimeField;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 // use ark_ec::Group;
-use ark_ec::PrimeGroup;
-use ark_std::Zero;
 
 use crate::decomp_4d::{decompose_scalar_table_based, fr_to_bigint, u128_to_fr};
 use crate::frobenius::frobenius_psi_power_projective;
-use crate::glv_four::{shamir_glv_mul_precomputed, PrecomputedShamirData, PrecomputedShamirTable};
+use crate::glv_four::{shamir_glv_mul_4d_precomputed, PrecomputedShamir4Data, PrecomputedShamir4Table};
 
 /// Helper function to decompose a scalar into 4D GLV form
 fn decompose_scalar(scalar: Fr) -> ([<Fr as PrimeField>::BigInt; 4], [bool; 4]) {
@@ -37,7 +35,7 @@ pub struct VectorScalarMulData {
     /// Signs for each coefficient
     pub scalar_signs: [bool; 4],
     /// Precomputed Shamir tables for each generator
-    pub precomputed_data: PrecomputedShamirData,
+    pub precomputed_data: PrecomputedShamir4Data,
 }
 
 impl VectorScalarMulData {
@@ -51,7 +49,7 @@ impl VectorScalarMulData {
         let (scalar_coeffs, scalar_signs) = decompose_scalar(scalar);
 
         // Precompute Shamir tables for all generators
-        let precomputed_data = PrecomputedShamirData::new(generators);
+        let precomputed_data = PrecomputedShamir4Data::new(generators);
 
         Self {
             scalar_coeffs,
@@ -88,7 +86,7 @@ pub fn vector_scalar_mul_add_precomputed(v: &mut [G2Projective], data: &VectorSc
 
     // Perform scalar multiplication and addition in parallel
     v.par_iter_mut().enumerate().for_each(|(i, v_point)| {
-        let scalar_mul_result = shamir_glv_mul_precomputed(
+        let scalar_mul_result = shamir_glv_mul_4d_precomputed(
             &data.precomputed_data.shamir_tables[i],
             &data.scalar_coeffs,
             &data.scalar_signs,
@@ -138,11 +136,11 @@ pub fn vector_scalar_mul_add_online(
             ];
 
             // Create temporary Shamir table
-            let shamir_table = PrecomputedShamirTable::new(&frobenius_bases);
+            let shamir_table = PrecomputedShamir4Table::new(&frobenius_bases);
 
             // Perform scalar multiplication and add to existing value
             let scalar_mul_result =
-                shamir_glv_mul_precomputed(&shamir_table, &scalar_coeffs, &scalar_signs);
+                shamir_glv_mul_4d_precomputed(&shamir_table, &scalar_coeffs, &scalar_signs);
             *v_point += scalar_mul_result;
         });
 }
@@ -224,11 +222,11 @@ pub fn vector_scalar_mul_v_add_g_precomputed(
             ];
 
             // Create temporary Shamir table for v_point
-            let shamir_table = PrecomputedShamirTable::new(&frobenius_bases);
+            let shamir_table = PrecomputedShamir4Table::new(&frobenius_bases);
 
             // Perform scalar multiplication: scalar * v[i] + generators[i]
             let v_scaled =
-                shamir_glv_mul_precomputed(&shamir_table, &data.scalar_coeffs, &data.scalar_signs);
+                shamir_glv_mul_4d_precomputed(&shamir_table, &data.scalar_coeffs, &data.scalar_signs);
             *v_point = v_scaled + generator;
         });
 }

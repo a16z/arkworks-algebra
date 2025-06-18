@@ -4,10 +4,9 @@
 //! that decomposes a scalar k into k = k0 + k1*λ + k2*λ² + k3*λ³
 //! where λ is the Frobenius eigenvalue.
 
-use crate::constants::{get_bn254_frobenius_eigenvalue, POWER_OF_2_DECOMPOSITIONS};
+use crate::constants::POWER_OF_2_DECOMPOSITIONS;
 use ark_bn254::Fr;
 use ark_ff::{BigInteger, PrimeField};
-use ark_std::Zero;
 use num_bigint::{BigInt, Sign};
 
 /// Convert u128 to Fr field element
@@ -124,4 +123,21 @@ pub fn get_max_coefficient_bits(coeffs: &[u128; 4]) -> usize {
         .map(|k| (128 - k.leading_zeros()) as usize)
         .max()
         .unwrap_or(0)
+}
+
+/// Decompose scalar for 4D GLV multiplication
+/// Returns coefficients as BigInts and their signs
+pub fn decompose_scalar_4d(scalar: Fr) -> ([<Fr as PrimeField>::BigInt; 4], [bool; 4]) {
+    let scalar_bigint = fr_to_bigint(scalar);
+    let (coeffs_u128, signs) = decompose_scalar_table_based(&scalar_bigint);
+    
+    // Convert u128 coefficients to BigInt
+    let coeffs = [
+        Fr::from(coeffs_u128[0]).into_bigint(),
+        Fr::from(coeffs_u128[1]).into_bigint(),
+        Fr::from(coeffs_u128[2]).into_bigint(),
+        Fr::from(coeffs_u128[3]).into_bigint(),
+    ];
+    
+    (coeffs, signs)
 }
