@@ -50,3 +50,7 @@ harness = false
 [[bench]]
 name = "g1_scalar_multiplication"
 harness = false
+
+[[bench]]
+name = "vector_scalar_mul_add_gamma_g2"
+harness = false

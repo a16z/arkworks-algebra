@@ -155,7 +155,7 @@ fn bench_g1_add_scalar_mul(c: &mut Criterion) {
                             .map(|_| G1Projective::rand(&mut rng))
                             .collect();
                         let start = Instant::now();
-                        vector_add_scalar_mul_g1_precomputed(&mut v, scalar, &precomputed_full);
+                        vector_add_scalar_mul_g1_precomputed(&mut v, scalar, &precomputed_full.shamir_tables);
                         total_time += start.elapsed();
                         black_box(v);
                     }
@@ -317,7 +317,7 @@ fn bench_g2_add_scalar_mul(c: &mut Criterion) {
                             .map(|_| G2Projective::rand(&mut rng))
                             .collect();
                         let start = Instant::now();
-                        vector_add_scalar_mul_g2_precomputed(&mut v, scalar, &precomputed_full);
+                        vector_add_scalar_mul_g2_precomputed(&mut v, scalar, &precomputed_full.shamir_tables);
                         total_time += start.elapsed();
                         black_box(v);
                     }

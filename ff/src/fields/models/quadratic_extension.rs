@@ -268,6 +268,7 @@ impl<P: QuadExtConfig> Field for QuadExtField<P> {
         Self::from_random_bytes_with_flags::<EmptyFlags>(bytes).map(|f| f.0)
     }
 
+    #[inline(always)]
     fn square_in_place(&mut self) -> &mut Self {
         // (c0, c1)^2 = (c0 + x*c1)^2
         //            = c0^2 + 2 c0 c1 x + c1^2 x^2

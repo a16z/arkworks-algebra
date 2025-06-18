@@ -18,7 +18,7 @@ use num_traits::One;
 
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
-
+#[derive(PartialEq)]
 pub enum TwistType {
     M,
     D,
@@ -52,7 +52,10 @@ pub trait BnConfig: 'static + Sized {
         a: impl IntoIterator<Item = impl Into<G1Prepared<Self>>>,
         b: impl IntoIterator<Item = impl Into<G2Prepared<Self>>>,
     ) -> MillerLoopOutput<Bn<Self>> {
-        let mut pairs = a
+        // let mut timer = TimingHelper::new();
+        
+        // Convert to prepared form first, filtering out zero elements
+        let mut pairs: Vec<_> = a
             .into_iter()
             .zip_eq(b)
             .filter_map(|(p, q)| {
@@ -62,42 +65,106 @@ pub trait BnConfig: 'static + Sized {
                     false => None,
                 }
             })
-            .collect::<Vec<_>>();
+            .collect();
+        // timer.record_span("Preparation");
 
-        let mut f = cfg_chunks_mut!(pairs, 4)
+        // Adaptive chunk size based on number of pairs and available parallelism
+        let chunk_size = if pairs.is_empty() {
+            1  // Avoid division by zero
+        } else if pairs.len() <= 4 {
+            pairs.len()
+        } else {
+            #[cfg(feature = "parallel")]
+            {
+                core::cmp::max(1, pairs.len() / rayon::current_num_threads())
+            }
+            #[cfg(not(feature = "parallel"))]
+            {
+                pairs.len()
+            }
+        };
+        
+        let mut f = cfg_chunks_mut!(pairs, chunk_size)
             .map(|pairs| {
                 let mut f = <Bn<Self> as Pairing>::TargetField::one();
+                
                 for i in (1..Self::ATE_LOOP_COUNT.len()).rev() {
                     if i != Self::ATE_LOOP_COUNT.len() - 1 {
+                        // square_timer.start = Instant::now();
                         f.square_in_place();
+                        // square_timer.spans.push(("square", square_timer.start.elapsed().as_nanos() as u64));
                     }
-
+                    
+                    // ell1_timer.start = Instant::now();
                     for (p, coeffs) in pairs.iter_mut() {
                         Bn::<Self>::ell(&mut f, &coeffs.next().unwrap(), &p.0);
                     }
+                    // ell1_timer.spans.push(("ell1", ell1_timer.start.elapsed().as_nanos() as u64));
 
                     let bit = Self::ATE_LOOP_COUNT[i - 1];
                     if bit == 1 || bit == -1 {
+                        // ell2_timer.start = Instant::now();
                         for (p, coeffs) in pairs.iter_mut() {
                             Bn::<Self>::ell(&mut f, &coeffs.next().unwrap(), &p.0);
                         }
+                        // ell2_timer.spans.push(("ell2", ell2_timer.start.elapsed().as_nanos() as u64));
                     }
                 }
+            
                 f
             })
             .product::<<Bn<Self> as Pairing>::TargetField>();
+        
+        // timer.record_span("Main Miller Loop");
 
         if Self::X_IS_NEGATIVE {
             f.cyclotomic_inverse_in_place();
         }
+        // timer.record_span("Cyclotomic Inverse");
 
-        for (p, coeffs) in &mut pairs {
-            Bn::<Self>::ell(&mut f, &coeffs.next().unwrap(), &p.0);
-        }
+        // Final ell operations
+        #[cfg(feature = "parallel")]
+        {
+            // Parallelize coefficient extraction for first ell calls
+            let ell_data1: Vec<_> = pairs
+                .par_iter_mut()
+                .map(|(p, coeffs)| (coeffs.next().unwrap(), p.0))
+                .collect();
+            
+            // Apply ell operations sequentially to maintain correctness
+            for (coeff, p) in ell_data1 {
+                Bn::<Self>::ell(&mut f, &coeff, &p);
+            }
 
-        for (p, coeffs) in &mut pairs {
-            Bn::<Self>::ell(&mut f, &coeffs.next().unwrap(), &p.0);
+            // Parallelize coefficient extraction for second ell calls
+            let ell_data2: Vec<_> = pairs
+                .par_iter_mut()
+                .map(|(p, coeffs)| (coeffs.next().unwrap(), p.0))
+                .collect();
+            
+            // Apply ell operations sequentially to maintain correctness
+            for (coeff, p) in ell_data2 {
+                Bn::<Self>::ell(&mut f, &coeff, &p);
+            }
         }
+        
+        #[cfg(not(feature = "parallel"))]
+        {
+            // First final ell round
+            for (p, coeffs) in pairs.iter_mut() {
+                let coeff = coeffs.next().unwrap();
+                Bn::<Self>::ell(&mut f, &coeff, &p.0);
+            }
+
+            // Second final ell round  
+            for (p, coeffs) in pairs.iter_mut() {
+                let coeff = coeffs.next().unwrap();
+                Bn::<Self>::ell(&mut f, &coeff, &p.0);
+            }
+        }
+        
+        // timer.record_span("Final Ell Operations");
+        // timer.print_report();
 
         MillerLoopOutput(f)
     }
@@ -181,22 +248,24 @@ pub struct Bn<P: BnConfig>(PhantomData<fn() -> P>);
 
 impl<P: BnConfig> Bn<P> {
     /// Evaluates the line function at point p.
+    #[inline(always)]
     fn ell(f: &mut Fp12<P::Fp12Config>, coeffs: &g2::EllCoeff<P>, p: &G1Affine<P>) {
+
+        let x = p.x;
+        let y = p.y;
+        
         let mut c0 = coeffs.0;
         let mut c1 = coeffs.1;
         let mut c2 = coeffs.2;
 
-        match P::TWIST_TYPE {
-            TwistType::M => {
-                c2.mul_assign_by_fp(&p.y);
-                c1.mul_assign_by_fp(&p.x);
-                f.mul_by_014(&c0, &c1, &c2);
-            },
-            TwistType::D => {
-                c0.mul_assign_by_fp(&p.y);
-                c1.mul_assign_by_fp(&p.x);
-                f.mul_by_034(&c0, &c1, &c2);
-            },
+        c1.mul_assign_by_fp(&x);
+
+        if P::TWIST_TYPE == TwistType::M {
+            c2.mul_assign_by_fp(&y);
+            f.mul_by_014(&c0, &c1, &c2);
+        } else {
+            c0.mul_assign_by_fp(&y);
+            f.mul_by_034(&c0, &c1, &c2);
         }
     }
 

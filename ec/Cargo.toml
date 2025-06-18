@@ -45,6 +45,8 @@ fnv = { version = "1.0", default-features = false }
 # hex.workspace = true
 
 [features]
-default = []
+# default = []
+default = ["parallel"]
 std = [ "ark-std/std", "ark-ff/std", "ark-serialize/std" ]
 parallel = [ "std", "rayon", "ark-std/parallel", "ark-serialize/parallel" ]
+# rayon = ["dep:rayon"]
