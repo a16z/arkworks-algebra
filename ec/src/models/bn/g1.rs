@@ -38,6 +38,12 @@ impl<'a, P: BnConfig> From<&'a G1Projective<P>> for G1Prepared<P> {
     }
 }
 
+impl<'a, P: BnConfig> From<&'a G1Prepared<P>> for G1Prepared<P> {
+    fn from(other: &'a G1Prepared<P>) -> Self {
+        other.clone()
+    }
+}
+
 impl<P: BnConfig> G1Prepared<P> {
     pub fn is_zero(&self) -> bool {
         self.0.infinity
