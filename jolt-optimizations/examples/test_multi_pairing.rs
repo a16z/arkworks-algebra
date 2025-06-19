@@ -3,31 +3,40 @@ use ark_ec::pairing::Pairing;
 use ark_ff::UniformRand;
 use ark_std::test_rng;
 
+
 fn main() {
     println!("Testing BN254 Multi-Pairing...");
     
     let mut rng = test_rng();
+
+     // Create test points
+     let g1_affine: Vec<G1Affine> = (0..100000)
+     .map(|_| G1Affine::rand(&mut rng))
+     .collect();
+    let g2_affine: Vec<G2Affine> = (0..100000)
+        .map(|_| G2Affine::rand(&mut rng))
+        .collect();
     
-    // Test with different numbers of pairs
-    for num_pairs in [100] {
-        println!("\nTesting with {} pairs:", num_pairs);
+    // Convert to prepared form
+    let g1_prepared: Vec<<Bn254 as Pairing>::G1Prepared> = g1_affine.iter().map(|p| p.into()).collect();
+    
+    // Use batch conversion for G2 points (parallelized if feature enabled)
+    use ark_ec::bn::G2Prepared;
+    use ark_bn254::Config;
+    let g2_prepared: Vec<<Bn254 as Pairing>::G2Prepared> = G2Prepared::<Config>::batch_from_affine(&g2_affine);
         
-        // Create test points
-        let g1_points: Vec<G1Affine> = (0..num_pairs)
-            .map(|_| G1Affine::rand(&mut rng))
-            .collect();
-        let g2_points: Vec<G2Affine> = (0..num_pairs)
-            .map(|_| G2Affine::rand(&mut rng))
-            .collect();
+    // Test with different numbers of pairs
+    for num_pairs in [1] {
+        println!("\nTesting with {} pairs:", num_pairs);
         
         // Time the original multi_miller_loop
         let start = std::time::Instant::now();
-        let miller_result1 = Bn254::multi_miller_loop(&g1_points, &g2_points);
+        let miller_result1 = Bn254::multi_miller_loop(&g1_prepared, &g2_prepared);
         let elapsed_original = start.elapsed();
         
         // Time the optimized multi_miller_loop
         let start = std::time::Instant::now();
-        let miller_result2 = Bn254::multi_miller_loop_optimized(&g1_points, &g2_points);
+        let miller_result2 = Bn254::multi_miller_loop_optimized(&g1_prepared, &g2_prepared);
         let elapsed_optimized = start.elapsed();
         
         // Apply final exponentiation to both results
