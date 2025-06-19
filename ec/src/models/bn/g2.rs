@@ -7,6 +7,9 @@ use ark_std::vec::*;
 use educe::Educe;
 use num_traits::One;
 
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
+
 use crate::{
     bn::{BnConfig, TwistType},
     models::short_weierstrass::SWCurveConfig,
@@ -41,6 +44,7 @@ pub struct G2HomProjective<P: BnConfig> {
 }
 
 impl<P: BnConfig> G2HomProjective<P> {
+    #[inline(always)]
     pub fn double_in_place(&mut self, two_inv: &P::Fp) -> EllCoeff<P> {
         // Formula for line function when working with
         // homogeneous projective coordinates.
@@ -67,6 +71,7 @@ impl<P: BnConfig> G2HomProjective<P> {
         }
     }
 
+    #[inline(always)]
     pub fn add_in_place(&mut self, q: &G2Affine<P>) -> EllCoeff<P> {
         // Formula for line function when working with
         // homogeneous projective coordinates.
@@ -97,6 +102,7 @@ impl<P: BnConfig> Default for G2Prepared<P> {
 }
 
 impl<P: BnConfig> From<G2Affine<P>> for G2Prepared<P> {
+    #[inline(always)]
     fn from(q: G2Affine<P>) -> Self {
         if q.infinity {
             G2Prepared {
@@ -104,8 +110,10 @@ impl<P: BnConfig> From<G2Affine<P>> for G2Prepared<P> {
                 infinity: true,
             }
         } else {
-            let two_inv = P::Fp::one().double().inverse().unwrap();
-            let mut ell_coeffs = vec![];
+            let two_inv = P::two_inv();
+            
+            // Use the compile-time capacity from the BnConfig implementation
+            let mut ell_coeffs = Vec::with_capacity(P::ell_coeffs_capacity());
             let mut r = G2HomProjective::<P> {
                 x: q.x,
                 y: q.y,
@@ -124,6 +132,7 @@ impl<P: BnConfig> From<G2Affine<P>> for G2Prepared<P> {
                 }
             }
 
+            // Compute q1 and q2
             let q1 = mul_by_char::<P>(q);
             let mut q2 = mul_by_char::<P>(q1);
 
@@ -183,5 +192,19 @@ fn mul_by_char<P: BnConfig>(r: G2Affine<P>) -> G2Affine<P> {
 impl<'a, P: BnConfig> From<&'a G2Prepared<P>> for G2Prepared<P> {
     fn from(other: &'a G2Prepared<P>) -> Self {
         other.clone()
+    }
+}
+
+impl<P: BnConfig> G2Prepared<P> {
+    /// Batch convert multiple G2Affine points to G2Prepared in parallel
+    #[cfg(feature = "parallel")]
+    pub fn batch_from_affine(points: &[G2Affine<P>]) -> Vec<Self> {
+        points.par_iter().map(|p| p.into()).collect()
+    }
+    
+    /// Batch convert multiple G2Affine points to G2Prepared  
+    #[cfg(not(feature = "parallel"))]
+    pub fn batch_from_affine(points: &[G2Affine<P>]) -> Vec<Self> {
+        points.iter().map(|p| p.into()).collect()
     }
 }

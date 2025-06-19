@@ -39,6 +39,19 @@ impl BnConfig for Config {
     type Fp12Config = Fq12Config;
     type G1Config = g1::Config;
     type G2Config = g2::Config;
+    
+    fn ell_coeffs_capacity() -> usize {
+        // For BN254: ATE_LOOP_COUNT has 65 elements
+        // Non-zero bits (excluding first): 32
+        // Total capacity: 64 + 32 + 2 = 98
+        98
+    }
+    
+    fn two_inv() -> Self::Fp {
+        // Precomputed value of 2^{-1} mod p for BN254
+        // This is (p + 1) / 2 = 10944121435919637611123202872628637544348155578648911831344518947322613104292
+        MontFp!("10944121435919637611123202872628637544348155578648911831344518947322613104292")
+    }
 }
 
 pub type Bn254 = Bn<Config>;

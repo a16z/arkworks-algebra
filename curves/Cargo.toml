@@ -82,7 +82,7 @@ ark-relations = {version = "0.5.0-alpha", default-features = false }
 
 [profile.release]
 opt-level = 3
-lto = "thin"
+lto = "fat"
 incremental = true
 panic = 'abort'
 

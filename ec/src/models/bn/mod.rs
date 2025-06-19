@@ -15,6 +15,7 @@ use ark_std::{cfg_chunks_mut, marker::PhantomData, vec::*};
 use educe::Educe;
 use itertools::Itertools;
 use num_traits::One;
+use ark_ff::AdditiveGroup;
 
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
@@ -47,12 +48,149 @@ pub trait BnConfig: 'static + Sized {
         BaseField = Fp2<Self::Fp2Config>,
         ScalarField = <Self::G1Config as CurveConfig>::ScalarField,
     >;
+    
+    /// Returns the capacity needed for ell_coeffs vector in G2Prepared
+    /// Default implementation counts at runtime, but implementations can override with a constant
+    fn ell_coeffs_capacity() -> usize {
+        let non_zero_bits = Self::ATE_LOOP_COUNT.iter().rev().skip(1)
+            .filter(|&&bit| bit != 0)
+            .count();
+        Self::ATE_LOOP_COUNT.len() - 1 + non_zero_bits + 2
+    }
+    
+    /// Returns the cached value of 2^{-1} in the base field
+    /// Implementations can override this to provide a precomputed constant
+    fn two_inv() -> Self::Fp {
+        Self::Fp::one().double().inverse().unwrap()
+    }
 
     fn multi_miller_loop(
         a: impl IntoIterator<Item = impl Into<G1Prepared<Self>>>,
         b: impl IntoIterator<Item = impl Into<G2Prepared<Self>>>,
     ) -> MillerLoopOutput<Bn<Self>> {
         // let mut timer = TimingHelper::new();
+        
+        // Convert to prepared form first, filtering out zero elements
+        let mut pairs: Vec<_> = a
+            .into_iter()
+            .zip_eq(b)
+            .filter_map(|(p, q)| {
+                let (p, q) = (p.into(), q.into());
+                match !p.is_zero() && !q.is_zero() {
+                    true => Some((p, q.ell_coeffs.into_iter())),
+                    false => None,
+                }
+            })
+            .collect();
+        // timer.record_span("Preparation");
+
+        // Adaptive chunk size based on number of pairs and available parallelism
+        let chunk_size = if pairs.is_empty() {
+            1  // Avoid division by zero
+        } else if pairs.len() <= 4 {
+            pairs.len()
+        } else {
+            #[cfg(feature = "parallel")]
+            {
+                core::cmp::max(1, pairs.len() / rayon::current_num_threads())
+            }
+            #[cfg(not(feature = "parallel"))]
+            {
+                pairs.len()
+            }
+        };
+        
+        let mut f = cfg_chunks_mut!(pairs, chunk_size)
+            .map(|pairs| {
+                let mut f = <Bn<Self> as Pairing>::TargetField::one();
+                
+                for i in (1..Self::ATE_LOOP_COUNT.len()).rev() {
+                    if i != Self::ATE_LOOP_COUNT.len() - 1 {
+                        // square_timer.start = Instant::now();
+                        f.square_in_place();
+                        // square_timer.spans.push(("square", square_timer.start.elapsed().as_nanos() as u64));
+                    }
+                    
+                    // ell1_timer.start = Instant::now();
+                    for (p, coeffs) in pairs.iter_mut() {
+                        Bn::<Self>::ell(&mut f, &coeffs.next().unwrap(), &p.0);
+                    }
+                    // ell1_timer.spans.push(("ell1", ell1_timer.start.elapsed().as_nanos() as u64));
+
+                    let bit = Self::ATE_LOOP_COUNT[i - 1];
+                    if bit == 1 || bit == -1 {
+                        // ell2_timer.start = Instant::now();
+                        for (p, coeffs) in pairs.iter_mut() {
+                            Bn::<Self>::ell(&mut f, &coeffs.next().unwrap(), &p.0);
+                        }
+                        // ell2_timer.spans.push(("ell2", ell2_timer.start.elapsed().as_nanos() as u64));
+                    }
+                }
+            
+                f
+            })
+            .product::<<Bn<Self> as Pairing>::TargetField>();
+        
+        // timer.record_span("Main Miller Loop");
+
+        if Self::X_IS_NEGATIVE {
+            f.cyclotomic_inverse_in_place();
+        }
+        // timer.record_span("Cyclotomic Inverse");
+
+        // Final ell operations
+        #[cfg(feature = "parallel")]
+        {
+            // Parallelize coefficient extraction for first ell calls
+            let ell_data1: Vec<_> = pairs
+                .par_iter_mut()
+                .map(|(p, coeffs)| (coeffs.next().unwrap(), p.0))
+                .collect();
+            
+            // Apply ell operations sequentially to maintain correctness
+            for (coeff, p) in ell_data1 {
+                Bn::<Self>::ell(&mut f, &coeff, &p);
+            }
+
+            // Parallelize coefficient extraction for second ell calls
+            let ell_data2: Vec<_> = pairs
+                .par_iter_mut()
+                .map(|(p, coeffs)| (coeffs.next().unwrap(), p.0))
+                .collect();
+            
+            // Apply ell operations sequentially to maintain correctness
+            for (coeff, p) in ell_data2 {
+                Bn::<Self>::ell(&mut f, &coeff, &p);
+            }
+        }
+        
+        #[cfg(not(feature = "parallel"))]
+        {
+            // First final ell round
+            for (p, coeffs) in pairs.iter_mut() {
+                let coeff = coeffs.next().unwrap();
+                Bn::<Self>::ell(&mut f, &coeff, &p.0);
+            }
+
+            // Second final ell round  
+            for (p, coeffs) in pairs.iter_mut() {
+                let coeff = coeffs.next().unwrap();
+                Bn::<Self>::ell(&mut f, &coeff, &p.0);
+            }
+        }
+        
+        // timer.record_span("Final Ell Operations");
+        // timer.print_report();
+
+        MillerLoopOutput(f)
+    }
+
+    #[inline]
+    fn multi_miller_loop_optimized(
+        a: impl IntoIterator<Item = impl Into<G1Prepared<Self>>>,
+        b: impl IntoIterator<Item = impl Into<G2Prepared<Self>>>,
+    ) -> MillerLoopOutput<Bn<Self>> {
+             // let mut timer = TimingHelper::new();
         
         // Convert to prepared form first, filtering out zero elements
         let mut pairs: Vec<_> = a
@@ -294,6 +432,13 @@ impl<P: BnConfig> Pairing for Bn<P> {
         b: impl IntoIterator<Item = impl Into<Self::G2Prepared>>,
     ) -> MillerLoopOutput<Self> {
         P::multi_miller_loop(a, b)
+    }
+
+    fn multi_miller_loop_optimized(
+        a: impl IntoIterator<Item = impl Into<Self::G1Prepared>>,
+        b: impl IntoIterator<Item = impl Into<Self::G2Prepared>>,
+    ) -> MillerLoopOutput<Self> {
+        P::multi_miller_loop_optimized(a, b)
     }
 
     fn final_exponentiation(f: MillerLoopOutput<Self>) -> Option<PairingOutput<Self>> {

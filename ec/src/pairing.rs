@@ -96,6 +96,13 @@ pub trait Pairing: Sized + 'static + Copy + Debug + Sync + Send + Eq {
         Self::multi_miller_loop([a], [b])
     }
 
+    fn multi_miller_loop_optimized(
+        a: impl IntoIterator<Item = impl Into<Self::G1Prepared>>,
+        b: impl IntoIterator<Item = impl Into<Self::G2Prepared>>,
+    ) -> MillerLoopOutput<Self> {
+        Self::multi_miller_loop(a, b) // Default implementation uses regular multi_miller_loop
+    }
+
     /// Performs final exponentiation of the result of a `Self::multi_miller_loop`.
     #[must_use]
     fn final_exponentiation(mlo: MillerLoopOutput<Self>) -> Option<PairingOutput<Self>>;
