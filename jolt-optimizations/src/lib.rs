@@ -9,9 +9,11 @@
 //! Uses Strauss-shamir batched scalar multiplication to maximally take advantage of GLV.
 
 pub mod batch_addition;
+pub mod batched_expressions;
 pub mod constants;
 pub mod decomp_2d;
 pub mod decomp_4d;
+pub mod dory_fq12_utils;
 pub mod dory_g1;
 pub mod dory_g2;
 pub mod dory_utils;

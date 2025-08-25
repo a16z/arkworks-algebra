@@ -56,5 +56,9 @@ harness = false
 name = "batch_addition"
 harness = false
 
+[[bench]]
+name = "batched_expressions_bench"
+harness = false
+
 [[example]]
 name = "memory_test"
