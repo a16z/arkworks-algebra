@@ -60,6 +60,6 @@ pub use batch_addition::{batch_g1_additions, batch_g1_additions_multi};
 pub use fq12_poly::fq12_to_poly12_coeffs;
 
 pub use polynomial_ops::{
-    eval_poly12, eval_poly_vec, g_coeffs, g_eval, poly_add_in_place, poly_div_rem_monic,
-    poly_mul, poly_sub_in_place,
+    eval_poly12, eval_poly_vec, g_coeffs, g_eval, poly_add_in_place, poly_div_rem_monic, poly_mul,
+    poly_sub_in_place,
 };

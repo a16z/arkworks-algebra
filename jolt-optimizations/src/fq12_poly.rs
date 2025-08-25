@@ -1,12 +1,13 @@
 //! Fq12 to polynomial conversion utilities for BN254
 //!
-//! This module provides functionality for converting Fq12 field elements
+//! provides functionality for converting Fq12 field elements
 //! to polynomial representations over Fq with the relation g(X) = X^12 - 18 X^6 + 82.
 
 use ark_bn254::{Fq, Fq12};
+use ark_ec::mnt6::G1Prepared;
 use ark_ff::{Field, Zero};
 
-/// Flatten ark_bn254::Fq12 to 12 base-field coefficients for a(X)=Σ c_i X^i, X=w,
+/// Flatten Fq12 to 12 base-field coefficients for a(X)=Σ c_i X^i, X=w,
 /// with the relation g(X) = X^12 - 18 X^6 + 82.
 ///
 /// The BN254 Fq12 field is constructed as a tower extension:
@@ -15,8 +16,9 @@ use ark_ff::{Field, Zero};
 /// - Fq12 = Fq6[w]/(w^2 - v)
 ///
 /// This function maps an Fq12 element to its polynomial representation
-/// in Fq[X] where X = w, using the mapping rule:
+/// in Fq[X] where X = w, using the mapping:
 /// (x + y·u)·w^k = (x - 9y)·w^k + y·w^{k+6}, for k∈{0..5}.
+/// @TODO(markosg04) provide proof?
 ///
 /// # Arguments
 /// * `a` - An Fq12 field element to convert
@@ -41,7 +43,7 @@ pub fn fq12_to_poly12_coeffs(a: &Fq12) -> [Fq; 12] {
     for (fp2, k) in terms {
         let x = fp2.c0; // coefficient of 1 in Fp2
         let y = fp2.c1; // coefficient of u in Fp2 (with u^2 = -1)
-        // Apply the mapping: (x + y·u)·w^k = (x - 9y)·w^k + y·w^{k+6}
+                        // Apply the mapping: (x + y·u)·w^k = (x - 9y)·w^k + y·w^{k+6}
         c[k] += x - nine * y;
         c[k + 6] += y;
     }

@@ -10,17 +10,14 @@ fn main() {
     println!("BN254 Compression Comparison");
     println!("{}", "=".repeat(50));
 
-    // G1 Element
     println!("\nG1 Element:");
     let g1_element = G1Projective::rand(&mut rng);
     compare_compression(g1_element, "G1");
 
-    // G2 Element
     println!("\nG2 Element:");
     let g2_element = G2Projective::rand(&mut rng);
     compare_compression(g2_element, "G2");
 
-    // GT Element (Fq12 - result of pairing)
     println!("\nGT Element (Fq12):");
     let g1_affine = g1_element.into_affine();
     let g2_affine = g2_element.into_affine();
@@ -43,7 +40,6 @@ fn compare_compression<T: CanonicalSerialize + CanonicalDeserialize>(element: T,
         .expect("Failed to serialize compressed");
     let compressed_size = compressed_bytes.len();
 
-    // Calculate compression ratio
     let compression_ratio = (compressed_size as f64 / uncompressed_size as f64) * 100.0;
     let size_reduction = 100.0 - compression_ratio;
 
@@ -53,12 +49,9 @@ fn compare_compression<T: CanonicalSerialize + CanonicalDeserialize>(element: T,
     println!("  Size reduction:    {:.2}%", size_reduction);
 
     // Verify we can deserialize
-    let _deserialized: T = T::deserialize_with_mode(
-        &compressed_bytes[..],
-        Compress::Yes,
-        Validate::Yes,
-    )
-    .expect("Failed to deserialize compressed data");
+    let _deserialized: T =
+        T::deserialize_with_mode(&compressed_bytes[..], Compress::Yes, Validate::Yes)
+            .expect("Failed to deserialize compressed data");
 }
 
 fn compare_compression_fq12(element: Fq12, _name: &str) {
@@ -86,10 +79,7 @@ fn compare_compression_fq12(element: Fq12, _name: &str) {
     println!("  Size reduction:    {:.2}%", size_reduction);
 
     // Verify we can deserialize
-    let _deserialized: Fq12 = Fq12::deserialize_with_mode(
-        &compressed_bytes[..],
-        Compress::Yes,
-        Validate::Yes,
-    )
-    .expect("Failed to deserialize compressed data");
+    let _deserialized: Fq12 =
+        Fq12::deserialize_with_mode(&compressed_bytes[..], Compress::Yes, Validate::Yes)
+            .expect("Failed to deserialize compressed data");
 }

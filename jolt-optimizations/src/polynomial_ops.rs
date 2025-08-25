@@ -1,7 +1,6 @@
 //! Polynomial operations over Fq for BN254
 //!
-//! This module provides polynomial arithmetic operations specifically for
-//! working with polynomials over the BN254 base field Fq.
+//! This module provides polynomial arithmetic ops for $F[X]$`, where $x\in F_p$
 
 use ark_bn254::Fq;
 use ark_ff::{Field, One, Zero};
@@ -17,9 +16,9 @@ use ark_ff::{Field, One, Zero};
 /// # Returns
 /// The value g(r) in Fq
 pub fn g_eval(r: &Fq) -> Fq {
-    let r2 = *r * r;       // r^2
-    let r3 = r2 * r;       // r^3
-    let r6 = r3.square();  // r^6
+    let r2 = r.square(); // r^2
+    let r3 = r2 * r; // r^3
+    let r6 = r3.square(); // r^6
     let r12 = r6.square(); // r^12
     r12 - (Fq::from(18u64) * r6) + Fq::from(82u64)
 }
@@ -134,16 +133,19 @@ pub fn poly_mul(a: &[Fq], b: &[Fq]) -> Vec<Fq> {
 /// Panics if g is empty or not monic (leading coefficient ≠ 1)
 pub fn poly_div_rem_monic(mut dividend: Vec<Fq>, g: &[Fq]) -> (Vec<Fq>, Vec<Fq>) {
     assert!(!g.is_empty(), "divisor g must be non-empty");
-    assert!(g.last().unwrap().is_one(), "divisor g must be monic (leading coefficient = 1)");
-    
+    assert!(
+        g.last().unwrap().is_one(),
+        "divisor g must be monic (leading coefficient = 1)"
+    );
+
     if dividend.is_empty() || dividend.len() < g.len() {
         return (vec![], dividend);
     }
-    
+
     let n = dividend.len() - 1;
     let m = g.len() - 1; // deg g
     let mut q = vec![Fq::zero(); n - m + 1];
-    
+
     for k in (m..=n).rev() {
         let lead = dividend[k]; // since g is monic, this is the quotient coefficient
         q[k - m] = lead;
@@ -155,12 +157,12 @@ pub fn poly_div_rem_monic(mut dividend: Vec<Fq>, g: &[Fq]) -> (Vec<Fq>, Vec<Fq>)
             dividend[k - m + j] -= lead * g[j];
         }
     }
-    
+
     // trim trailing zeros from remainder
     while let Some(true) = dividend.last().map(|c| c.is_zero()) {
         dividend.pop();
     }
-    
+
     (q, dividend)
 }
 
