@@ -3,28 +3,23 @@
 //! where g(X) = X^12 - 18X^6 + 82
 
 use ark_bn254::{Fq, Fq12};
-use ark_ff::{BigInteger, Field, One, PrimeField, Zero};
+use ark_ff::{Field, One, PrimeField, Zero};
 
 use crate::{
     eval_poly12, eval_poly_vec, fq12_to_poly12_coeffs, g_coeffs, g_eval, poly_div_rem_monic,
-    poly_mul, poly_sub_in_place,
 };
 
 pub type Poly12 = [Fq; 12];
 
-/// A term in an expression: polynomial with an exponent
 #[derive(Clone, Debug)]
 pub struct ExpressionTerm {
-    /// The polynomial z_{i,j}(X) as coefficients
     pub poly: Poly12,
-    /// The exponent e_{i,j} in Fp
     pub exponent: Fq,
 }
 
 /// A single expression of the form z_i'(X) ≡ ∏_j z_{i,j}(X)^{e_{i,j}} (mod g(X))
 #[derive(Clone, Debug)]
 pub struct Expression {
-    /// Name/identifier for this expression
     pub name: String,
     /// Left-hand side: z_i'(X)
     pub lhs: Poly12,
@@ -35,33 +30,17 @@ pub struct Expression {
 }
 
 impl Expression {
-    /// Create a new expression with quotient computed immediately
-    /// This assumes all exponents are 1 (multiplication only)
-    pub fn new_with_quotient(name: String, lhs: Poly12, rhs: Vec<ExpressionTerm>) -> Self {
-        let g = g_coeffs();
-        let residual = compute_residual_no_reduce(&lhs, &rhs);
-        let quotient = quotient_divide_by_g(residual, &g);
-
-        Expression {
-            name,
-            lhs,
-            rhs,
-            quotient: Some(quotient),
-        }
-    }
-
     /// Create an expression from Fq12 elements with quotient computed immediately
-    /// This handles arbitrary exponents efficiently
     pub fn from_fq12_with_quotient(
         name: String,
         lhs_fq12: &Fq12,
         rhs_fq12: Vec<(Fq12, Fq)>,
     ) -> Self {
-        let lhs_poly = fq12_to_poly12(lhs_fq12);
+        let lhs_poly = fq12_to_poly12_coeffs(lhs_fq12);
         let rhs_terms = rhs_fq12
             .iter()
             .map(|(elem, exp)| ExpressionTerm {
-                poly: fq12_to_poly12(elem),
+                poly: fq12_to_poly12_coeffs(elem),
                 exponent: *exp,
             })
             .collect();
@@ -80,13 +59,11 @@ impl Expression {
     }
 }
 
-/// Specification for a round of expressions
 #[derive(Clone, Debug)]
-pub struct RoundSpec {
+pub struct RoundExpresions {
     pub expressions: Vec<Expression>,
 }
 
-/// Result of batch verification
 #[derive(Clone, Debug)]
 pub struct BatchCheckResult {
     /// Whether the check passed
@@ -97,44 +74,6 @@ pub struct BatchCheckResult {
     pub rhs: Fq,
     /// Challenge point used for evaluation
     pub r: Fq,
-}
-
-/// Compute the residual for multiplication-only expressions
-/// IMPORTANT: This only works for expressions where all exponents are 1
-/// For general exponents, the prover must use Fq12 arithmetic
-///
-/// # Arguments
-/// * `lhs` - The left-hand side polynomial z_i'(X)
-/// * `rhs_terms` - The right-hand side terms (must all have exponent = 1)
-///
-/// # Returns
-/// The residual polynomial as a Vec<Fq> (trimmed of trailing zeros)
-fn compute_residual_no_reduce(lhs: &Poly12, rhs_terms: &[ExpressionTerm]) -> Vec<Fq> {
-    // Only handle the simple case where all exponents are 1
-    // This is just for testing - real Dory expressions need the Fq12 approach
-
-    let mut product = vec![Fq::one()];
-
-    for term in rhs_terms {
-        if term.exponent == Fq::one() {
-            product = poly_mul(&product, &term.poly[..]);
-        } else {
-            // For benchmarking, just return a dummy quotient
-            // In real usage, compute from Fq12 values
-            return vec![Fq::zero(); 12];
-        }
-    }
-
-    // Compute lhs - product
-    let mut residual = lhs.to_vec();
-    poly_sub_in_place(&mut residual, &product);
-
-    // Trim trailing zeros
-    while residual.len() > 1 && residual.last() == Some(&Fq::zero()) {
-        residual.pop();
-    }
-
-    residual
 }
 
 /// Compute the residual from Fq12 elements directly (for arbitrary exponents)
@@ -192,10 +131,6 @@ fn quotient_divide_by_g(residual: Vec<Fq>, g: &[Fq]) -> Vec<Fq> {
     quotient
 }
 
-// ============================================================================
-// Verifier Batch Engine
-// ============================================================================
-
 /// Verify a batch of expressions at a challenge point r
 ///
 /// Checks that: ∑_i γ_i(z_i'(r) - ∏_j z_{i,j}(r)^{e_{i,j}}) = (∑_i γ_i q_i(r)) * g(r)
@@ -212,7 +147,6 @@ pub fn verify_batched_expressions(
     expressions: &[Expression],
     r: Fq,
     gammas: &[Fq],
-    g: &[Fq; 13],
 ) -> BatchCheckResult {
     assert_eq!(
         expressions.len(),
@@ -256,13 +190,8 @@ pub fn verify_batched_expressions(
         q_sum += gammas[i] * qi_r;
     }
 
-    // Compute g(r)
     let gr = g_eval(&r);
-
-    // Compute rhs = q_sum * g(r)
     let rhs = q_sum * gr;
-
-    // Check equality
     let ok = lhs_sum == rhs;
 
     BatchCheckResult {
@@ -271,18 +200,4 @@ pub fn verify_batched_expressions(
         rhs,
         r,
     }
-}
-
-// ============================================================================
-// Helper Functions
-// ============================================================================
-
-/// Convert an Fq12 element to a Poly12 representation
-pub fn fq12_to_poly12(elem: &Fq12) -> Poly12 {
-    fq12_to_poly12_coeffs(elem)
-}
-
-/// Create an expression from Fq12 elements (deprecated - use Expression::from_fq12_with_quotient)
-pub fn expression_from_fq12(name: String, lhs: &Fq12, rhs_elems: Vec<(Fq12, Fq)>) -> Expression {
-    Expression::from_fq12_with_quotient(name, lhs, rhs_elems)
 }

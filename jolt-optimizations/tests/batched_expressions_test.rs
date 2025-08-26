@@ -5,7 +5,9 @@ use jolt_optimizations::eval_poly12;
 use jolt_optimizations::eval_poly_vec;
 use jolt_optimizations::g_eval;
 use jolt_optimizations::{
-    batched_expressions::{verify_batched_expressions, Expression, ExpressionTerm, RoundSpec},
+    batched_expressions::{
+        verify_batched_expressions, Expression, ExpressionTerm, RoundExpresions,
+    },
     fq12_to_poly12_coeffs, g_coeffs, poly_div_rem_monic, poly_mul,
 };
 
@@ -18,34 +20,18 @@ fn test_simple_multiplication_expression() {
     let b = Fq12::rand(&mut rng);
     let c = a * b;
 
-    // Convert to polynomial form
-    let c_poly = fq12_to_poly12_coeffs(&c);
-    let a_poly = fq12_to_poly12_coeffs(&a);
-    let b_poly = fq12_to_poly12_coeffs(&b);
-
     // Create expression: c(X) = a(X) * b(X) mod g(X)
-    let expression = Expression::new_with_quotient(
+    let expression = Expression::from_fq12_with_quotient(
         "a*b=c".to_string(),
-        c_poly,
-        vec![
-            ExpressionTerm {
-                poly: a_poly,
-                exponent: Fq::one(),
-            },
-            ExpressionTerm {
-                poly: b_poly,
-                exponent: Fq::one(),
-            },
-        ],
+        &c,
+        vec![(a, Fq::one()), (b, Fq::one())],
     );
 
     // Verify at random point
     let r = Fq::rand(&mut rng);
     let gammas = vec![Fq::one()];
-    let g = g_coeffs();
-    let g_array: [Fq; 13] = g.try_into().unwrap();
 
-    let result = verify_batched_expressions(&[expression], r, &gammas, &g_array);
+    let result = verify_batched_expressions(&[expression], r, &gammas);
     assert!(result.ok, "Simple multiplication expression should verify");
 }
 
@@ -64,10 +50,8 @@ fn test_exponentiation_expression() {
     // Verify
     let r = Fq::rand(&mut rng);
     let gammas = vec![Fq::one()];
-    let g = g_coeffs();
-    let g_array: [Fq; 13] = g.try_into().unwrap();
 
-    let result = verify_batched_expressions(&[expression], r, &gammas, &g_array);
+    let result = verify_batched_expressions(&[expression], r, &gammas);
     assert!(result.ok, "Exponentiation expression should verify");
 }
 
@@ -91,10 +75,8 @@ fn test_multi_exponentiation_expression() {
     // Verify
     let r = Fq::rand(&mut rng);
     let gammas = vec![Fq::one()];
-    let g = g_coeffs();
-    let g_array: [Fq; 13] = g.try_into().unwrap();
 
-    let result = verify_batched_expressions(&[expression], r, &gammas, &g_array);
+    let result = verify_batched_expressions(&[expression], r, &gammas);
     assert!(result.ok, "Multi-exponentiation expression should verify");
 }
 
@@ -138,15 +120,13 @@ fn test_batched_expressions() {
     ));
 
     // No need to prepare quotients - already done
-    let round = RoundSpec { expressions };
+    let round = RoundExpresions { expressions };
 
     // Verify with random gammas
     let r = Fq::rand(&mut rng);
     let gammas = vec![Fq::rand(&mut rng), Fq::rand(&mut rng), Fq::rand(&mut rng)];
-    let g = g_coeffs();
-    let g_array: [Fq; 13] = g.try_into().unwrap();
 
-    let result = verify_batched_expressions(&round.expressions, r, &gammas, &g_array);
+    let result = verify_batched_expressions(&round.expressions, r, &gammas);
     assert!(result.ok, "Batched expressions should verify");
 }
 
@@ -158,25 +138,14 @@ fn test_zero_exponent() {
     let a = Fq12::rand(&mut rng);
     let one = Fq12::one();
 
-    let one_poly = fq12_to_poly12_coeffs(&one);
-    let a_poly = fq12_to_poly12_coeffs(&a);
-
-    let expression = Expression::new_with_quotient(
-        "a^0=1".to_string(),
-        one_poly,
-        vec![ExpressionTerm {
-            poly: a_poly,
-            exponent: Fq::zero(),
-        }],
-    );
+    let expression =
+        Expression::from_fq12_with_quotient("a^0=1".to_string(), &one, vec![(a, Fq::zero())]);
 
     // Verify
     let r = Fq::rand(&mut rng);
     let gammas = vec![Fq::one()];
-    let g = g_coeffs();
-    let g_array: [Fq; 13] = g.try_into().unwrap();
 
-    let result = verify_batched_expressions(&[expression], r, &gammas, &g_array);
+    let result = verify_batched_expressions(&[expression], r, &gammas);
     assert!(result.ok, "Zero exponent expression should verify");
 }
 
@@ -190,29 +159,19 @@ fn test_rejection_of_incorrect_expression() {
     let c = a * b;
     let c_bad = c + Fq12::one();
 
-    let c_bad_poly = fq12_to_poly12_coeffs(&c_bad);
-    let a_poly = fq12_to_poly12_coeffs(&a);
-    let b_poly = fq12_to_poly12_coeffs(&b);
-
     // Create the correct expression for a * b to get the correct quotient
-    let c_poly = fq12_to_poly12_coeffs(&c);
-    let correct_expression = Expression::new_with_quotient(
+    let correct_expression = Expression::from_fq12_with_quotient(
         "correct".to_string(),
-        c_poly,
-        vec![
-            ExpressionTerm {
-                poly: a_poly,
-                exponent: Fq::one(),
-            },
-            ExpressionTerm {
-                poly: b_poly,
-                exponent: Fq::one(),
-            },
-        ],
+        &c,
+        vec![(a, Fq::one()), (b, Fq::one())],
     );
 
     // Now create bad expression with wrong lhs but steal the correct quotient
     // (This tests that verification catches mismatched expressions)
+    let c_bad_poly = fq12_to_poly12_coeffs(&c_bad);
+    let a_poly = fq12_to_poly12_coeffs(&a);
+    let b_poly = fq12_to_poly12_coeffs(&b);
+
     let bad_expression = Expression {
         name: "bad".to_string(),
         lhs: c_bad_poly,
@@ -232,10 +191,8 @@ fn test_rejection_of_incorrect_expression() {
     // Verify - should fail
     let r = Fq::rand(&mut rng);
     let gammas = vec![Fq::one()];
-    let g = g_coeffs();
-    let g_array: [Fq; 13] = g.try_into().unwrap();
 
-    let result = verify_batched_expressions(&[bad_expression], r, &gammas, &g_array);
+    let result = verify_batched_expressions(&[bad_expression], r, &gammas);
     assert!(!result.ok, "Incorrect expression should not verify");
 }
 
@@ -287,15 +244,13 @@ fn test_randomized_expressions() {
         ];
 
         // No need to prepare quotients - already done
-        let round = RoundSpec { expressions };
+        let round = RoundExpresions { expressions };
 
         // Verify with random challenge and gammas
         let r = Fq::rand(&mut rng);
         let gammas: Vec<Fq> = (0..5).map(|_| Fq::rand(&mut rng)).collect();
-        let g = g_coeffs();
-        let g_array: [Fq; 13] = g.try_into().unwrap();
 
-        let result = verify_batched_expressions(&round.expressions, r, &gammas, &g_array);
+        let result = verify_batched_expressions(&round.expressions, r, &gammas);
         assert!(
             result.ok,
             "Random expressions should verify (lhs={:?}, rhs={:?})",
@@ -323,10 +278,8 @@ fn test_large_exponents() {
     // Verify
     let r = Fq::rand(&mut rng);
     let gammas = vec![Fq::one()];
-    let g = g_coeffs();
-    let g_array: [Fq; 13] = g.try_into().unwrap();
 
-    let result = verify_batched_expressions(&[expression], r, &gammas, &g_array);
+    let result = verify_batched_expressions(&[expression], r, &gammas);
     assert!(result.ok, "Large exponent expression should verify");
 }
 
@@ -336,21 +289,18 @@ fn test_empty_rhs() {
 
     // Create expression: 1 = (empty product)
     let one = Fq12::one();
-    let one_poly = fq12_to_poly12_coeffs(&one);
 
-    let expression = Expression::new_with_quotient(
+    let expression = Expression::from_fq12_with_quotient(
         "1=empty".to_string(),
-        one_poly,
+        &one,
         vec![], // Empty RHS should be treated as 1
     );
 
     // Verify
     let r = Fq::rand(&mut rng);
     let gammas = vec![Fq::one()];
-    let g = g_coeffs();
-    let g_array: [Fq; 13] = g.try_into().unwrap();
 
-    let result = verify_batched_expressions(&[expression], r, &gammas, &g_array);
+    let result = verify_batched_expressions(&[expression], r, &gammas);
     assert!(result.ok, "Empty RHS expression should verify");
 }
 
@@ -400,8 +350,7 @@ fn test_single_power_a2_eq_c() {
     // verify via the batched checker
     let r = Fq::rand(&mut rng);
     let gammas = vec![Fq::one()];
-    let g_arr: [Fq; 13] = g_coeffs().try_into().unwrap();
-    let res = verify_batched_expressions(&[expr.clone()], r, &gammas, &g_arr);
+    let res = verify_batched_expressions(&[expr.clone()], r, &gammas);
     assert!(res.ok, "batched verify should pass");
 
     // manual spot-check: lhs(r) - (a(r))^2 == q(r)*g(r) == 0
@@ -463,10 +412,9 @@ fn test_multifactor_batch_round() {
     // One random point and random gamma for batching
     let r = Fq::rand(&mut rng);
     let gammas = vec![Fq::one(), Fq::rand(&mut rng)];
-    let g_arr: [Fq; 13] = g_coeffs().try_into().unwrap();
 
     // Batch verify
-    let res = verify_batched_expressions(&[expr1.clone(), expr2.clone()], r, &gammas, &g_arr);
+    let res = verify_batched_expressions(&[expr1.clone(), expr2.clone()], r, &gammas);
     assert!(res.ok, "batched verify should pass");
 
     // Optional: ensure at least one quotient is nonzero in this multifactor case

@@ -4,7 +4,7 @@ use ark_std::test_rng;
 
 use jolt_optimizations::batched_expressions::verify_batched_expressions;
 use jolt_optimizations::dory_fq12_utils::{pow_fq12, DoryState};
-use jolt_optimizations::{fq12_to_poly12_coeffs, g_coeffs};
+use jolt_optimizations::fq12_to_poly12_coeffs;
 
 use jolt_optimizations::batched_expressions::Expression;
 
@@ -36,10 +36,8 @@ fn test_dory_single_round_valid() {
     // Verify at random point
     let r = Fq::rand(&mut rng);
     let gammas = vec![Fq::one(); expressions.len()];
-    let g = g_coeffs();
-    let g_array: [Fq; 13] = g.try_into().unwrap();
 
-    let result = verify_batched_expressions(&expressions, r, &gammas, &g_array);
+    let result = verify_batched_expressions(&expressions, r, &gammas);
     assert!(result.ok, "Valid Dory expressions should verify");
 
     // Also verify that the computed values match what we expect
@@ -78,10 +76,8 @@ fn test_dory_multi_round_valid() {
     let gammas: Vec<Fq> = (0..all_expressions.len())
         .map(|_| Fq::rand(&mut rng))
         .collect();
-    let g = g_coeffs();
-    let g_array: [Fq; 13] = g.try_into().unwrap();
 
-    let result = verify_batched_expressions(&all_expressions, r, &gammas, &g_array);
+    let result = verify_batched_expressions(&all_expressions, r, &gammas);
     assert!(
         result.ok,
         "Valid multi-round Dory expressions should verify (lhs={:?}, rhs={:?})",
@@ -128,10 +124,8 @@ fn test_dory_tampering_detection() {
     // Verify should fail
     let r = Fq::rand(&mut rng);
     let gammas = vec![Fq::one(); expressions.len()];
-    let g = g_coeffs();
-    let g_array: [Fq; 13] = g.try_into().unwrap();
 
-    let result = verify_batched_expressions(&expressions, r, &gammas, &g_array);
+    let result = verify_batched_expressions(&expressions, r, &gammas);
     assert!(!result.ok, "Tampered Dory expressions should not verify");
 }
 
@@ -164,10 +158,8 @@ fn test_dory_wrong_exponent_detection() {
     // Verify should fail
     let r = Fq::rand(&mut rng);
     let gammas = vec![Fq::one()];
-    let g = g_coeffs();
-    let g_array: [Fq; 13] = g.try_into().unwrap();
 
-    let result = verify_batched_expressions(&[wrong_expression], r, &gammas, &g_array);
+    let result = verify_batched_expressions(&[wrong_expression], r, &gammas);
     assert!(!result.ok, "Wrong exponent should not verify");
 }
 
@@ -212,10 +204,8 @@ fn test_dory_naive_vs_batched() {
 
     let r = Fq::rand(&mut rng);
     let gammas = vec![Fq::one(); expressions.len()];
-    let g = g_coeffs();
-    let g_array: [Fq; 13] = g.try_into().unwrap();
 
-    let result = verify_batched_expressions(&expressions, r, &gammas, &g_array);
+    let result = verify_batched_expressions(&expressions, r, &gammas);
     assert!(result.ok, "Batched verification should succeed");
 }
 
@@ -241,9 +231,7 @@ fn test_dory_zero_exponent() {
     // Verify
     let r = Fq::rand(&mut rng);
     let gammas = vec![Fq::one()];
-    let g = g_coeffs();
-    let g_array: [Fq; 13] = g.try_into().unwrap();
 
-    let result = verify_batched_expressions(&[expression], r, &gammas, &g_array);
+    let result = verify_batched_expressions(&[expression], r, &gammas);
     assert!(result.ok, "Zero exponent expression should verify");
 }

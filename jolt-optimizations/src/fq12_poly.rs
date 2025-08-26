@@ -6,7 +6,7 @@
 //! - Evaluation and manipulation of the minimal polynomial g(X) = X^12 - 18X^6 + 82
 
 use ark_bn254::{Fq, Fq12};
-use ark_ff::{One, Zero};
+use ark_ff::{Field, One, Zero};
 
 /// Flatten Fq12 to 12 base-field coefficients for a(X)=Σ c_i X^i, X=w,
 /// with the relation g(X) = X^12 - 18 X^6 + 82.
