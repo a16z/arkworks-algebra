@@ -2,11 +2,9 @@ use ark_bn254::{Fq, Fq12};
 use ark_ff::{Field, One, UniformRand};
 use ark_std::test_rng;
 
-use jolt_optimizations::batched_expressions::verify_batched_expressions;
+use jolt_optimizations::batched_expressions::{verify_batched_expressions, Expression, ExpressionTerm};
 use jolt_optimizations::dory_fq12_utils::{pow_fq12, DoryState};
 use jolt_optimizations::fq12_to_poly12_coeffs;
-
-use jolt_optimizations::batched_expressions::Expression;
 
 #[test]
 fn test_dory_single_round_valid() {
@@ -105,16 +103,16 @@ fn test_dory_tampering_detection() {
 
     // Tamper with the first expression's LHS
     let tampered_c = state.c + Fq12::one(); // Add 1 to C
-    let tampered_expression = Expression::from_fq12_with_quotient(
+    let tampered_expression = Expression::new(
         "tampered_C".to_string(),
-        &tampered_c,
+        fq12_to_poly12_coeffs(&tampered_c),
         vec![
-            (state.c, Fq::one()),
-            (state.chi[0], Fq::one()),
-            (state.d2, beta),
-            (state.d1, beta.inverse().unwrap()),
-            (state.c_plus, alpha),
-            (state.c_minus, alpha.inverse().unwrap()),
+            ExpressionTerm { poly: fq12_to_poly12_coeffs(&state.c), exponent: Fq::one() },
+            ExpressionTerm { poly: fq12_to_poly12_coeffs(&state.chi[0]), exponent: Fq::one() },
+            ExpressionTerm { poly: fq12_to_poly12_coeffs(&state.d2), exponent: beta },
+            ExpressionTerm { poly: fq12_to_poly12_coeffs(&state.d1), exponent: beta.inverse().unwrap() },
+            ExpressionTerm { poly: fq12_to_poly12_coeffs(&state.c_plus), exponent: alpha },
+            ExpressionTerm { poly: fq12_to_poly12_coeffs(&state.c_minus), exponent: alpha.inverse().unwrap() },
         ],
     );
 
@@ -144,14 +142,14 @@ fn test_dory_wrong_exponent_detection() {
     let d1_correct = state.compute_d1_update(alpha, beta);
 
     // Create a expression with wrong exponent
-    let wrong_expression = Expression::from_fq12_with_quotient(
+    let wrong_expression = Expression::new(
         "D1_wrong_exp".to_string(),
-        &d1_correct,
+        fq12_to_poly12_coeffs(&d1_correct),
         vec![
-            (state.d1l, alpha + Fq::one()), // Wrong exponent!
-            (state.d1r, Fq::one()),
-            (state.delta_1l, alpha * beta),
-            (state.delta_1r, beta),
+            ExpressionTerm { poly: fq12_to_poly12_coeffs(&state.d1l), exponent: alpha + Fq::one() }, // Wrong exponent!
+            ExpressionTerm { poly: fq12_to_poly12_coeffs(&state.d1r), exponent: Fq::one() },
+            ExpressionTerm { poly: fq12_to_poly12_coeffs(&state.delta_1l), exponent: alpha * beta },
+            ExpressionTerm { poly: fq12_to_poly12_coeffs(&state.delta_1r), exponent: beta },
         ],
     );
 
@@ -219,12 +217,12 @@ fn test_dory_zero_exponent() {
     // Create a expression with zero exponent (should contribute 1)
     let result = state.c + Fq12::one(); // c + 1
 
-    let expression = Expression::from_fq12_with_quotient(
+    let expression = Expression::new(
         "zero_exp_test".to_string(),
-        &result,
+        fq12_to_poly12_coeffs(&result),
         vec![
-            (state.c, Fq::one()),
-            (state.d1, Fq::from(0u64)), // Zero exponent - should contribute 1
+            ExpressionTerm { poly: fq12_to_poly12_coeffs(&state.c), exponent: Fq::one() },
+            ExpressionTerm { poly: fq12_to_poly12_coeffs(&state.d1), exponent: Fq::from(0u64) }, // Zero exponent - should contribute 1
         ],
     );
 

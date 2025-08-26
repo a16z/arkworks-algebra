@@ -4,7 +4,8 @@ use ark_bn254::{Fq, Fq12};
 use ark_ff::{Field, One, PrimeField, UniformRand, Zero};
 use ark_std::test_rng;
 
-use crate::batched_expressions::Expression;
+use crate::batched_expressions::{Expression, ExpressionTerm};
+use crate::fq12_to_poly12_coeffs;
 
 /// Helper function to compute a^exp in Fq12
 pub fn pow_fq12(base: &Fq12, exp: Fq) -> Fq12 {
@@ -166,69 +167,72 @@ impl DoryState {
         let gamma_inv = gamma.inverse().unwrap();
 
         let c_new = self.compute_c_update(round, alpha, beta);
-        expressions.push(Expression::from_fq12_with_quotient(
+        expressions.push(Expression::new(
             format!("C_update_round_{}", round),
-            &c_new,
+            fq12_to_poly12_coeffs(&c_new),
             vec![
-                (self.c, Fq::one()),
-                (self.chi[round], Fq::one()),
-                (self.d2, beta),
-                (self.d1, beta_inv),
-                (self.c_plus, alpha),
-                (self.c_minus, alpha_inv),
+                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.c), exponent: Fq::one() },
+                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.chi[round]), exponent: Fq::one() },
+                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.d2), exponent: beta },
+                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.d1), exponent: beta_inv },
+                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.c_plus), exponent: alpha },
+                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.c_minus), exponent: alpha_inv },
             ],
         ));
 
         let d1_new = self.compute_d1_update(alpha, beta);
-        expressions.push(Expression::from_fq12_with_quotient(
+        expressions.push(Expression::new(
             format!("D1_update_round_{}", round),
-            &d1_new,
+            fq12_to_poly12_coeffs(&d1_new),
             vec![
-                (self.d1l, alpha),
-                (self.d1r, Fq::one()),
-                (self.delta_1l, alpha * beta),
-                (self.delta_1r, beta),
+                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.d1l), exponent: alpha },
+                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.d1r), exponent: Fq::one() },
+                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.delta_1l), exponent: alpha * beta },
+                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.delta_1r), exponent: beta },
             ],
         ));
 
         let d2_new = self.compute_d2_update(alpha, beta);
-        expressions.push(Expression::from_fq12_with_quotient(
+        expressions.push(Expression::new(
             format!("D2_update_round_{}", round),
-            &d2_new,
+            fq12_to_poly12_coeffs(&d2_new),
             vec![
-                (self.d2l, alpha_inv),
-                (self.d2r, Fq::one()),
-                (self.delta_2l, alpha_inv * beta_inv),
-                (self.delta_2r, beta_inv),
+                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.d2l), exponent: alpha_inv },
+                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.d2r), exponent: Fq::one() },
+                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.delta_2l), exponent: alpha_inv * beta_inv },
+                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.delta_2r), exponent: beta_inv },
             ],
         ));
 
         let c_fold = self.compute_c_fold(gamma, s1_tilde, s2_tilde);
-        expressions.push(Expression::from_fq12_with_quotient(
+        expressions.push(Expression::new(
             format!("C_fold_round_{}", round),
-            &c_fold,
+            fq12_to_poly12_coeffs(&c_fold),
             vec![
-                (self.c, Fq::one()),
-                (self.h_t, s1_tilde * s2_tilde),
-                (self.e_h1_e2, gamma),
-                (self.e_e1_h2, gamma_inv),
+                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.c), exponent: Fq::one() },
+                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.h_t), exponent: s1_tilde * s2_tilde },
+                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.e_h1_e2), exponent: gamma },
+                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.e_e1_h2), exponent: gamma_inv },
             ],
         ));
 
         let d1_fold = self.compute_d1_fold(gamma, s1_tilde);
-        expressions.push(Expression::from_fq12_with_quotient(
+        expressions.push(Expression::new(
             format!("D1_fold_round_{}", round),
-            &d1_fold,
-            vec![(self.d1, Fq::one()), (self.e_h1_gamma2, s1_tilde * gamma)],
+            fq12_to_poly12_coeffs(&d1_fold),
+            vec![
+                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.d1), exponent: Fq::one() },
+                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.e_h1_gamma2), exponent: s1_tilde * gamma },
+            ],
         ));
 
         let d2_fold = self.compute_d2_fold(gamma, s2_tilde);
-        expressions.push(Expression::from_fq12_with_quotient(
+        expressions.push(Expression::new(
             format!("D2_fold_round_{}", round),
-            &d2_fold,
+            fq12_to_poly12_coeffs(&d2_fold),
             vec![
-                (self.d2, Fq::one()),
-                (self.e_gamma1_h2, s2_tilde * gamma_inv),
+                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.d2), exponent: Fq::one() },
+                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.e_gamma1_h2), exponent: s2_tilde * gamma_inv },
             ],
         ));
 

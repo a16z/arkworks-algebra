@@ -2,11 +2,12 @@
 //! z_i'(X) ≡ ∏_j z_{i,j}(X)^{e_{i,j}} (mod g(X))
 //! where g(X) = X^12 - 18X^6 + 82
 
-use ark_bn254::{Fq, Fq12};
+use ark_bn254::Fq;
 use ark_ff::{Field, One, PrimeField, Zero};
 
 use crate::{
-    eval_poly12, eval_poly_vec, fq12_to_poly12_coeffs, g_coeffs, g_eval, poly_div_rem_monic,
+    compute_quotient::compute_quotient_direct,
+    eval_poly12, eval_poly_vec, g_coeffs, g_eval,
 };
 
 pub type Poly12 = [Fq; 12];
@@ -30,32 +31,50 @@ pub struct Expression {
 }
 
 impl Expression {
-    /// Create an expression from Fq12 elements with quotient computed immediately
-    pub fn from_fq12_with_quotient(
-        name: String,
-        lhs_fq12: &Fq12,
-        rhs_fq12: Vec<(Fq12, Fq)>,
-    ) -> Self {
-        let lhs_poly = fq12_to_poly12_coeffs(lhs_fq12);
-        let rhs_terms = rhs_fq12
+    /// Create an expression and compute its quotient directly in F[x]
+    pub fn new(name: String, lhs: Poly12, rhs: Vec<ExpressionTerm>) -> Self {
+        // Convert to format needed by compute_quotient_direct
+        let lhs_vec = lhs.to_vec();
+        let rhs_terms: Vec<(Vec<Fq>, Fq)> = rhs
             .iter()
-            .map(|(elem, exp)| ExpressionTerm {
-                poly: fq12_to_poly12_coeffs(elem),
-                exponent: *exp,
-            })
+            .map(|term| (term.poly.to_vec(), term.exponent))
             .collect();
-
-        // Compute residual using Fq12 arithmetic
-        let residual = compute_residual_from_fq12(lhs_fq12, &rhs_fq12);
+        
         let g = g_coeffs();
-        let quotient = quotient_divide_by_g(residual, &g);
-
+        let quotient = compute_quotient_direct(&lhs_vec, &rhs_terms, &g)
+            .expect("Failed to compute quotient");
+        
         Expression {
             name,
-            lhs: lhs_poly,
-            rhs: rhs_terms,
+            lhs,
+            rhs,
             quotient: Some(quotient),
         }
+    }
+    
+    /// Create an expression without computing quotient (for testing)
+    pub fn without_quotient(name: String, lhs: Poly12, rhs: Vec<ExpressionTerm>) -> Self {
+        Expression {
+            name,
+            lhs,
+            rhs,
+            quotient: None,
+        }
+    }
+    
+    /// Compute and attach quotient to an expression
+    pub fn compute_quotient(&mut self) {
+        let lhs_vec = self.lhs.to_vec();
+        let rhs_terms: Vec<(Vec<Fq>, Fq)> = self.rhs
+            .iter()
+            .map(|term| (term.poly.to_vec(), term.exponent))
+            .collect();
+        
+        let g = g_coeffs();
+        let quotient = compute_quotient_direct(&lhs_vec, &rhs_terms, &g)
+            .expect("Failed to compute quotient");
+        
+        self.quotient = Some(quotient);
     }
 }
 
@@ -76,61 +95,6 @@ pub struct BatchCheckResult {
     pub r: Fq,
 }
 
-/// Compute the residual from Fq12 elements directly (for arbitrary exponents)
-/// This is much more efficient than polynomial exponentiation
-///
-/// # Arguments
-/// * `lhs_fq12` - The left-hand side as an Fq12 element
-/// * `rhs_fq12` - The right-hand side terms as Fq12 elements with their exponents
-///
-/// # Returns
-/// The residual polynomial after reduction by g(X)
-fn compute_residual_from_fq12(lhs_fq12: &Fq12, rhs_fq12: &[(Fq12, Fq)]) -> Vec<Fq> {
-    // Compute the product in Fq12
-    let mut product = Fq12::one();
-    for (elem, exp) in rhs_fq12 {
-        if !exp.is_zero() {
-            let exp_bigint = exp.into_bigint();
-            product *= elem.pow(&exp_bigint);
-        }
-    }
-
-    // Compute residual in Fq12
-    let residual_fq12 = *lhs_fq12 - product;
-
-    // Convert to polynomial
-    let residual_poly = fq12_to_poly12_coeffs(&residual_fq12);
-
-    // The residual should be divisible by g(X) if the expression is satisfied
-    // Return as Vec for division
-    residual_poly.to_vec()
-}
-
-/// Divide the residual polynomial by g(X) to obtain the quotient
-///
-/// # Arguments
-/// * `residual` - The residual polynomial R(X) = z_i'(X) - ∏_j z_{i,j}(X)^{e_{i,j}}
-/// * `g` - The polynomial g(X) = X^12 - 18X^6 + 82
-///
-/// # Returns
-/// The quotient q_i(X) such that R(X) = q_i(X) * g(X)
-///
-/// # Panics
-/// Panics if the remainder is non-zero
-fn quotient_divide_by_g(residual: Vec<Fq>, g: &[Fq]) -> Vec<Fq> {
-    let (quotient, remainder) = poly_div_rem_monic(residual, g);
-
-    // In honest execution, remainder should be zero
-    for coeff in &remainder {
-        assert!(
-            coeff.is_zero(),
-            "Residual is not divisible by g(X) - remainder is non-zero"
-        );
-    }
-
-    quotient
-}
-
 /// Verify a batch of expressions at a challenge point r
 ///
 /// Checks that: ∑_i γ_i(z_i'(r) - ∏_j z_{i,j}(r)^{e_{i,j}}) = (∑_i γ_i q_i(r)) * g(r)
@@ -139,7 +103,6 @@ fn quotient_divide_by_g(residual: Vec<Fq>, g: &[Fq]) -> Vec<Fq> {
 /// * `expressions` - The expressions to verify (must have quotients attached)
 /// * `r` - The challenge point for evaluation
 /// * `gammas` - Random coefficients for aggregation (same length as expressions)
-/// * `g` - The polynomial g(X) coefficients
 ///
 /// # Returns
 /// A BatchCheckResult indicating success/failure and the computed values

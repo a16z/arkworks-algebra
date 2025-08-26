@@ -20,11 +20,25 @@ fn test_simple_multiplication_expression() {
     let b = Fq12::rand(&mut rng);
     let c = a * b;
 
+    // Convert to polynomials
+    let a_poly = fq12_to_poly12_coeffs(&a);
+    let b_poly = fq12_to_poly12_coeffs(&b);
+    let c_poly = fq12_to_poly12_coeffs(&c);
+
     // Create expression: c(X) = a(X) * b(X) mod g(X)
-    let expression = Expression::from_fq12_with_quotient(
+    let expression = Expression::new(
         "a*b=c".to_string(),
-        &c,
-        vec![(a, Fq::one()), (b, Fq::one())],
+        c_poly,
+        vec![
+            ExpressionTerm {
+                poly: a_poly,
+                exponent: Fq::one(),
+            },
+            ExpressionTerm {
+                poly: b_poly,
+                exponent: Fq::one(),
+            },
+        ],
     );
 
     // Verify at random point
@@ -43,9 +57,18 @@ fn test_exponentiation_expression() {
     let a = Fq12::rand(&mut rng);
     let c = a * a * a;
 
-    // Use the proper method for expressions with exponents
-    let expression =
-        Expression::from_fq12_with_quotient("a^3=c".to_string(), &c, vec![(a, Fq::from(3u64))]);
+    // Convert to polynomials
+    let a_poly = fq12_to_poly12_coeffs(&a);
+    let c_poly = fq12_to_poly12_coeffs(&c);
+
+    let expression = Expression::new(
+        "a^3=c".to_string(),
+        c_poly,
+        vec![ExpressionTerm {
+            poly: a_poly,
+            exponent: Fq::from(3u64),
+        }],
+    );
 
     // Verify
     let r = Fq::rand(&mut rng);
@@ -65,11 +88,29 @@ fn test_multi_exponentiation_expression() {
     let c = Fq12::rand(&mut rng);
     let d = a.square() * b * b * b * c;
 
-    // Use the proper method for expressions with exponents
-    let expression = Expression::from_fq12_with_quotient(
+    // Convert to polynomials
+    let a_poly = fq12_to_poly12_coeffs(&a);
+    let b_poly = fq12_to_poly12_coeffs(&b);
+    let c_poly = fq12_to_poly12_coeffs(&c);
+    let d_poly = fq12_to_poly12_coeffs(&d);
+
+    let expression = Expression::new(
         "a^2*b^3*c=d".to_string(),
-        &d,
-        vec![(a, Fq::from(2u64)), (b, Fq::from(3u64)), (c, Fq::one())],
+        d_poly,
+        vec![
+            ExpressionTerm {
+                poly: a_poly,
+                exponent: Fq::from(2u64),
+            },
+            ExpressionTerm {
+                poly: b_poly,
+                exponent: Fq::from(3u64),
+            },
+            ExpressionTerm {
+                poly: c_poly,
+                exponent: Fq::one(),
+            },
+        ],
     );
 
     // Verify
@@ -92,20 +133,32 @@ fn test_batched_expressions() {
     let b1 = Fq12::rand(&mut rng);
     let c1 = a1 * b1;
 
-    expressions.push(Expression::from_fq12_with_quotient(
+    expressions.push(Expression::new(
         "c1=a1*b1".to_string(),
-        &c1,
-        vec![(a1, Fq::one()), (b1, Fq::one())],
+        fq12_to_poly12_coeffs(&c1),
+        vec![
+            ExpressionTerm {
+                poly: fq12_to_poly12_coeffs(&a1),
+                exponent: Fq::one(),
+            },
+            ExpressionTerm {
+                poly: fq12_to_poly12_coeffs(&b1),
+                exponent: Fq::one(),
+            },
+        ],
     ));
 
     // Expression 2: d^2 = e
     let d2 = Fq12::rand(&mut rng);
     let e2 = d2.square();
 
-    expressions.push(Expression::from_fq12_with_quotient(
+    expressions.push(Expression::new(
         "e2=d2^2".to_string(),
-        &e2,
-        vec![(d2, Fq::from(2u64))],
+        fq12_to_poly12_coeffs(&e2),
+        vec![ExpressionTerm {
+            poly: fq12_to_poly12_coeffs(&d2),
+            exponent: Fq::from(2u64),
+        }],
     ));
 
     // Expression 3: f * g^3 = h
@@ -113,13 +166,21 @@ fn test_batched_expressions() {
     let g3 = Fq12::rand(&mut rng);
     let h3 = f3 * g3 * g3 * g3;
 
-    expressions.push(Expression::from_fq12_with_quotient(
+    expressions.push(Expression::new(
         "h3=f3*g3^3".to_string(),
-        &h3,
-        vec![(f3, Fq::one()), (g3, Fq::from(3u64))],
+        fq12_to_poly12_coeffs(&h3),
+        vec![
+            ExpressionTerm {
+                poly: fq12_to_poly12_coeffs(&f3),
+                exponent: Fq::one(),
+            },
+            ExpressionTerm {
+                poly: fq12_to_poly12_coeffs(&g3),
+                exponent: Fq::from(3u64),
+            },
+        ],
     ));
 
-    // No need to prepare quotients - already done
     let round = RoundExpresions { expressions };
 
     // Verify with random gammas
@@ -138,8 +199,14 @@ fn test_zero_exponent() {
     let a = Fq12::rand(&mut rng);
     let one = Fq12::one();
 
-    let expression =
-        Expression::from_fq12_with_quotient("a^0=1".to_string(), &one, vec![(a, Fq::zero())]);
+    let expression = Expression::new(
+        "a^0=1".to_string(),
+        fq12_to_poly12_coeffs(&one),
+        vec![ExpressionTerm {
+            poly: fq12_to_poly12_coeffs(&a),
+            exponent: Fq::zero(),
+        }],
+    );
 
     // Verify
     let r = Fq::rand(&mut rng);
@@ -160,28 +227,33 @@ fn test_rejection_of_incorrect_expression() {
     let c_bad = c + Fq12::one();
 
     // Create the correct expression for a * b to get the correct quotient
-    let correct_expression = Expression::from_fq12_with_quotient(
+    let correct_expression = Expression::new(
         "correct".to_string(),
-        &c,
-        vec![(a, Fq::one()), (b, Fq::one())],
+        fq12_to_poly12_coeffs(&c),
+        vec![
+            ExpressionTerm {
+                poly: fq12_to_poly12_coeffs(&a),
+                exponent: Fq::one(),
+            },
+            ExpressionTerm {
+                poly: fq12_to_poly12_coeffs(&b),
+                exponent: Fq::one(),
+            },
+        ],
     );
 
     // Now create bad expression with wrong lhs but steal the correct quotient
     // (This tests that verification catches mismatched expressions)
-    let c_bad_poly = fq12_to_poly12_coeffs(&c_bad);
-    let a_poly = fq12_to_poly12_coeffs(&a);
-    let b_poly = fq12_to_poly12_coeffs(&b);
-
     let bad_expression = Expression {
         name: "bad".to_string(),
-        lhs: c_bad_poly,
+        lhs: fq12_to_poly12_coeffs(&c_bad),
         rhs: vec![
             ExpressionTerm {
-                poly: a_poly,
+                poly: fq12_to_poly12_coeffs(&a),
                 exponent: Fq::one(),
             },
             ExpressionTerm {
-                poly: b_poly,
+                poly: fq12_to_poly12_coeffs(&b),
                 exponent: Fq::one(),
             },
         ],
@@ -216,34 +288,76 @@ fn test_randomized_expressions() {
 
         // Create multiple expressions
         let expressions = vec![
-            Expression::from_fq12_with_quotient(
+            Expression::new(
                 "ab=a*b".to_string(),
-                &ab,
-                vec![(a, Fq::one()), (b, Fq::one())],
+                fq12_to_poly12_coeffs(&ab),
+                vec![
+                    ExpressionTerm {
+                        poly: fq12_to_poly12_coeffs(&a),
+                        exponent: Fq::one(),
+                    },
+                    ExpressionTerm {
+                        poly: fq12_to_poly12_coeffs(&b),
+                        exponent: Fq::one(),
+                    },
+                ],
             ),
-            Expression::from_fq12_with_quotient(
+            Expression::new(
                 "bc=b*c".to_string(),
-                &bc,
-                vec![(b, Fq::one()), (c, Fq::one())],
+                fq12_to_poly12_coeffs(&bc),
+                vec![
+                    ExpressionTerm {
+                        poly: fq12_to_poly12_coeffs(&b),
+                        exponent: Fq::one(),
+                    },
+                    ExpressionTerm {
+                        poly: fq12_to_poly12_coeffs(&c),
+                        exponent: Fq::one(),
+                    },
+                ],
             ),
-            Expression::from_fq12_with_quotient(
+            Expression::new(
                 "abc=a*b*c".to_string(),
-                &abc,
-                vec![(a, Fq::one()), (b, Fq::one()), (c, Fq::one())],
+                fq12_to_poly12_coeffs(&abc),
+                vec![
+                    ExpressionTerm {
+                        poly: fq12_to_poly12_coeffs(&a),
+                        exponent: Fq::one(),
+                    },
+                    ExpressionTerm {
+                        poly: fq12_to_poly12_coeffs(&b),
+                        exponent: Fq::one(),
+                    },
+                    ExpressionTerm {
+                        poly: fq12_to_poly12_coeffs(&c),
+                        exponent: Fq::one(),
+                    },
+                ],
             ),
-            Expression::from_fq12_with_quotient(
+            Expression::new(
                 "a2b=a^2*b".to_string(),
-                &a2b,
-                vec![(a, Fq::from(2u64)), (b, Fq::one())],
+                fq12_to_poly12_coeffs(&a2b),
+                vec![
+                    ExpressionTerm {
+                        poly: fq12_to_poly12_coeffs(&a),
+                        exponent: Fq::from(2u64),
+                    },
+                    ExpressionTerm {
+                        poly: fq12_to_poly12_coeffs(&b),
+                        exponent: Fq::one(),
+                    },
+                ],
             ),
-            Expression::from_fq12_with_quotient(
+            Expression::new(
                 "b3=b^3".to_string(),
-                &b3,
-                vec![(b, Fq::from(3u64))],
+                fq12_to_poly12_coeffs(&b3),
+                vec![ExpressionTerm {
+                    poly: fq12_to_poly12_coeffs(&b),
+                    exponent: Fq::from(3u64),
+                }],
             ),
         ];
 
-        // No need to prepare quotients - already done
         let round = RoundExpresions { expressions };
 
         // Verify with random challenge and gammas
@@ -272,8 +386,14 @@ fn test_large_exponents() {
         result *= a;
     }
 
-    let expression =
-        Expression::from_fq12_with_quotient("a^17".to_string(), &result, vec![(a, Fq::from(exp))]);
+    let expression = Expression::new(
+        "a^17".to_string(),
+        fq12_to_poly12_coeffs(&result),
+        vec![ExpressionTerm {
+            poly: fq12_to_poly12_coeffs(&a),
+            exponent: Fq::from(exp),
+        }],
+    );
 
     // Verify
     let r = Fq::rand(&mut rng);
@@ -290,9 +410,9 @@ fn test_empty_rhs() {
     // Create expression: 1 = (empty product)
     let one = Fq12::one();
 
-    let expression = Expression::from_fq12_with_quotient(
+    let expression = Expression::new(
         "1=empty".to_string(),
-        &one,
+        fq12_to_poly12_coeffs(&one),
         vec![], // Empty RHS should be treated as 1
     );
 
@@ -340,8 +460,14 @@ fn test_single_power_a2_eq_c() {
     let a = Fq12::rand(&mut rng);
     let c = a.square();
 
-    let expr =
-        Expression::from_fq12_with_quotient("a^2=c".to_string(), &c, vec![(a, Fq::from(2u64))]);
+    let expr = Expression::new(
+        "a^2=c".to_string(),
+        fq12_to_poly12_coeffs(&c),
+        vec![ExpressionTerm {
+            poly: fq12_to_poly12_coeffs(&a),
+            exponent: Fq::from(2u64),
+        }],
+    );
 
     // quotient should be zero (or empty after trimming)
     let q = expr.quotient.as_ref().unwrap();
@@ -388,14 +514,26 @@ fn test_multifactor_batch_round() {
     d1p *= &t;
 
     // correct expression/quotient
-    let expr1 = Expression::from_fq12_with_quotient(
+    let expr1 = Expression::new(
         "D1".to_string(),
-        &d1p,
+        fq12_to_poly12_coeffs(&d1p),
         vec![
-            (d1l, alpha),
-            (d1r, Fq::from(1u64)),
-            (dl1, alphab),
-            (dr1, beta),
+            ExpressionTerm {
+                poly: fq12_to_poly12_coeffs(&d1l),
+                exponent: alpha,
+            },
+            ExpressionTerm {
+                poly: fq12_to_poly12_coeffs(&d1r),
+                exponent: Fq::from(1u64),
+            },
+            ExpressionTerm {
+                poly: fq12_to_poly12_coeffs(&dl1),
+                exponent: alphab,
+            },
+            ExpressionTerm {
+                poly: fq12_to_poly12_coeffs(&dr1),
+                exponent: beta,
+            },
         ],
     );
 
@@ -403,10 +541,19 @@ fn test_multifactor_batch_round() {
     let x = Fq12::rand(&mut rng);
     let y = Fq12::rand(&mut rng);
     let z = x * y;
-    let expr2 = Expression::from_fq12_with_quotient(
+    let expr2 = Expression::new(
         "xy=z".to_string(),
-        &z,
-        vec![(x, Fq::from(1)), (y, Fq::from(1))],
+        fq12_to_poly12_coeffs(&z),
+        vec![
+            ExpressionTerm {
+                poly: fq12_to_poly12_coeffs(&x),
+                exponent: Fq::from(1),
+            },
+            ExpressionTerm {
+                poly: fq12_to_poly12_coeffs(&y),
+                exponent: Fq::from(1),
+            },
+        ],
     );
 
     // One random point and random gamma for batching

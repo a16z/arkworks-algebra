@@ -10,6 +10,7 @@
 
 pub mod batch_addition;
 pub mod batched_expressions;
+pub mod compute_quotient;
 pub mod constants;
 pub mod decomp_2d;
 pub mod decomp_4d;
