@@ -4,8 +4,7 @@ use ark_bn254::{Fq, Fq12};
 use ark_ff::{BigInteger, Field, One, PrimeField, UniformRand, Zero};
 use ark_std::test_rng;
 
-use crate::batched_expressions::{Expression, ExpressionTerm};
-use crate::{fq12_to_poly12_coeffs, g_coeffs, poly_div_rem_monic};
+use crate::batched_expressions::Expression;
 
 /// Helper function to compute a^exp in Fq12
 pub fn pow_fq12(base: &Fq12, exp: Fq) -> Fq12 {
@@ -65,21 +64,21 @@ impl DoryState {
             e_gamma1_h2: Fq12::rand(&mut rng),
         }
     }
-    
+
     /// Compute Dory C update in Fq12
     /// C' ← C + χ_i + β·D_2 + β^{-1}·D_1 + α·C_+ + α^{-1}·C_-
     pub fn compute_c_update(&self, round: usize, alpha: Fq, beta: Fq) -> Fq12 {
         let alpha_inv = alpha.inverse().unwrap();
         let beta_inv = beta.inverse().unwrap();
-        
-        self.c 
+
+        self.c
             + self.chi[round]
             + pow_fq12(&self.d2, beta)
             + pow_fq12(&self.d1, beta_inv)
             + pow_fq12(&self.c_plus, alpha)
             + pow_fq12(&self.c_minus, alpha_inv)
     }
-    
+
     /// Compute Dory D1 update in Fq12
     /// D_1' ← α·D_{1L} + D_{1R} + αβ·Δ_{1L} + β·Δ_{1R}
     pub fn compute_d1_update(&self, alpha: Fq, beta: Fq) -> Fq12 {
@@ -88,43 +87,78 @@ impl DoryState {
             + pow_fq12(&self.delta_1l, alpha * beta)
             + pow_fq12(&self.delta_1r, beta)
     }
-    
+
     /// Compute Dory D2 update in Fq12
     /// D_2' ← α^{-1}·D_{2L} + D_{2R} + α^{-1}β^{-1}·Δ_{2L} + β^{-1}·Δ_{2R}
     pub fn compute_d2_update(&self, alpha: Fq, beta: Fq) -> Fq12 {
         let alpha_inv = alpha.inverse().unwrap();
         let beta_inv = beta.inverse().unwrap();
-        
+
         pow_fq12(&self.d2l, alpha_inv)
             + self.d2r
             + pow_fq12(&self.delta_2l, alpha_inv * beta_inv)
             + pow_fq12(&self.delta_2r, beta_inv)
     }
-    
+
     /// Compute Dory C fold in Fq12
     /// C' ← C + s̃_1·s̃_2·H_T + γ·e(H_1, E_2) + γ^{-1}·e(E_1, H_2)
     pub fn compute_c_fold(&self, gamma: Fq, s1_tilde: Fq, s2_tilde: Fq) -> Fq12 {
         let gamma_inv = gamma.inverse().unwrap();
-        
+
         self.c
             + pow_fq12(&self.h_t, s1_tilde * s2_tilde)
             + pow_fq12(&self.e_h1_e2, gamma)
             + pow_fq12(&self.e_e1_h2, gamma_inv)
     }
-    
+
     /// Compute Dory D1 fold in Fq12
     /// D_1' ← D_1 + e(H_1, Γ_{2,0}·s̃_1·γ)
     pub fn compute_d1_fold(&self, gamma: Fq, s1_tilde: Fq) -> Fq12 {
         self.d1 + pow_fq12(&self.e_h1_gamma2, s1_tilde * gamma)
     }
-    
+
     /// Compute Dory D2 fold in Fq12
     /// D_2' ← D_2 + e(Γ_{1,0}·s̃_2·γ^{-1}, H_2)
     pub fn compute_d2_fold(&self, gamma: Fq, s2_tilde: Fq) -> Fq12 {
         let gamma_inv = gamma.inverse().unwrap();
         self.d2 + pow_fq12(&self.e_gamma1_h2, s2_tilde * gamma_inv)
     }
-    
+
+    /// Compute all rounds naively in Fq12 (for benchmarking comparison)
+    pub fn compute_all_rounds(
+        &self,
+        num_rounds: usize,
+        alphas: &[Fq],
+        betas: &[Fq],
+        gammas: &[Fq],
+        s1_tildes: &[Fq],
+        s2_tildes: &[Fq],
+    ) -> (Fq12, Fq12, Fq12) {
+        let mut c = self.c;
+        let mut d1 = self.d1;
+        let mut d2 = self.d2;
+
+        for round in 0..num_rounds {
+            let alpha = alphas[round];
+            let beta = betas[round];
+            let gamma = gammas[round];
+            let s1_tilde = s1_tildes[round];
+            let s2_tilde = s2_tildes[round];
+
+            // Update phase
+            c = self.compute_c_update(round, alpha, beta);
+            d1 = self.compute_d1_update(alpha, beta);
+            d2 = self.compute_d2_update(alpha, beta);
+
+            // Fold phase
+            c = self.compute_c_fold(gamma, s1_tilde, s2_tilde);
+            d1 = self.compute_d1_fold(gamma, s1_tilde);
+            d2 = self.compute_d2_fold(gamma, s2_tilde);
+        }
+
+        (c, d1, d2)
+    }
+
     /// Generate all Dory expressions for one round with proper quotients
     pub fn generate_round_expressions(
         &self,
@@ -136,16 +170,16 @@ impl DoryState {
         s2_tilde: Fq,
     ) -> Vec<Expression> {
         let mut expressions = Vec::new();
-        
+
         let alpha_inv = alpha.inverse().unwrap();
         let beta_inv = beta.inverse().unwrap();
         let gamma_inv = gamma.inverse().unwrap();
-        
+
         // C update expression
         let c_new = self.compute_c_update(round, alpha, beta);
-        expressions.push(create_dory_expression_with_quotient(
+        expressions.push(Expression::from_fq12_with_quotient(
             format!("C_update_round_{}", round),
-            c_new,
+            &c_new,
             vec![
                 (self.c, Fq::one()),
                 (self.chi[round], Fq::one()),
@@ -155,12 +189,12 @@ impl DoryState {
                 (self.c_minus, alpha_inv),
             ],
         ));
-        
+
         // D1 update expression
         let d1_new = self.compute_d1_update(alpha, beta);
-        expressions.push(create_dory_expression_with_quotient(
+        expressions.push(Expression::from_fq12_with_quotient(
             format!("D1_update_round_{}", round),
-            d1_new,
+            &d1_new,
             vec![
                 (self.d1l, alpha),
                 (self.d1r, Fq::one()),
@@ -168,12 +202,12 @@ impl DoryState {
                 (self.delta_1r, beta),
             ],
         ));
-        
+
         // D2 update expression
         let d2_new = self.compute_d2_update(alpha, beta);
-        expressions.push(create_dory_expression_with_quotient(
+        expressions.push(Expression::from_fq12_with_quotient(
             format!("D2_update_round_{}", round),
-            d2_new,
+            &d2_new,
             vec![
                 (self.d2l, alpha_inv),
                 (self.d2r, Fq::one()),
@@ -181,12 +215,12 @@ impl DoryState {
                 (self.delta_2r, beta_inv),
             ],
         ));
-        
+
         // C fold expression
         let c_fold = self.compute_c_fold(gamma, s1_tilde, s2_tilde);
-        expressions.push(create_dory_expression_with_quotient(
+        expressions.push(Expression::from_fq12_with_quotient(
             format!("C_fold_round_{}", round),
-            c_fold,
+            &c_fold,
             vec![
                 (self.c, Fq::one()),
                 (self.h_t, s1_tilde * s2_tilde),
@@ -194,102 +228,26 @@ impl DoryState {
                 (self.e_e1_h2, gamma_inv),
             ],
         ));
-        
+
         // D1 fold expression
         let d1_fold = self.compute_d1_fold(gamma, s1_tilde);
-        expressions.push(create_dory_expression_with_quotient(
+        expressions.push(Expression::from_fq12_with_quotient(
             format!("D1_fold_round_{}", round),
-            d1_fold,
-            vec![
-                (self.d1, Fq::one()),
-                (self.e_h1_gamma2, s1_tilde * gamma),
-            ],
+            &d1_fold,
+            vec![(self.d1, Fq::one()), (self.e_h1_gamma2, s1_tilde * gamma)],
         ));
-        
+
         // D2 fold expression
         let d2_fold = self.compute_d2_fold(gamma, s2_tilde);
-        expressions.push(create_dory_expression_with_quotient(
+        expressions.push(Expression::from_fq12_with_quotient(
             format!("D2_fold_round_{}", round),
-            d2_fold,
+            &d2_fold,
             vec![
                 (self.d2, Fq::one()),
                 (self.e_gamma1_h2, s2_tilde * gamma_inv),
             ],
         ));
-        
+
         expressions
-    }
-}
-
-/// Generate a Dory expression with proper quotient computed from Fq12 values
-pub fn create_dory_expression_with_quotient(
-    name: String,
-    lhs_fq12: Fq12,
-    rhs_fq12: Vec<(Fq12, Fq)>,
-) -> Expression {
-    // Convert to polynomial form
-    let lhs_poly = fq12_to_poly12_coeffs(&lhs_fq12);
-
-    // Create expression terms
-    let rhs_terms: Vec<ExpressionTerm> = rhs_fq12
-        .iter()
-        .map(|(elem, exp)| ExpressionTerm {
-            poly: fq12_to_poly12_coeffs(elem),
-            exponent: *exp,
-        })
-        .collect();
-
-    // Compute the product in Fq12 (much more efficient than polynomial exponentiation)
-    let mut product = Fq12::one();
-    for (elem, exp) in &rhs_fq12 {
-        if !exp.is_zero() {
-            product *= pow_fq12(elem, *exp);
-        }
-    }
-
-    // The expression should satisfy: lhs_fq12 = product
-    // So the residual is: lhs_fq12 - product = 0 (for valid expressions)
-    // But we need the quotient such that: (lhs_poly - product_poly) = quotient * g
-
-    // Get product as polynomial
-    let product_poly = fq12_to_poly12_coeffs(&product);
-
-    // Compute polynomial product (without exponentiation, just for the quotient)
-    // For this, we multiply the polynomials representing the Fq12 product
-    let prod_as_poly = product_poly.to_vec();
-
-    // Since we're in Fq12, lhs_poly and prod_as_poly differ by a multiple of g
-    // when viewed as polynomials in Fq[X]
-
-    // For a valid expression, lhs_fq12 = product in Fq12
-    // This means lhs_poly ≡ product_poly (mod g)
-    // So residual = lhs_poly - product_poly should be divisible by g
-
-    let mut residual = lhs_poly.to_vec();
-    for i in 0..prod_as_poly.len().min(residual.len()) {
-        residual[i] -= prod_as_poly[i];
-    }
-
-    // If prod_as_poly is longer, extend residual
-    if prod_as_poly.len() > residual.len() {
-        residual.resize(prod_as_poly.len(), Fq::zero());
-        for i in lhs_poly.len()..prod_as_poly.len() {
-            residual[i] = -prod_as_poly[i];
-        }
-    }
-
-    // For valid Dory expressions, residual should be 0 or very small
-    // But for the general case, compute quotient
-    let g = g_coeffs();
-    let (quotient, _remainder) = poly_div_rem_monic(residual, &g);
-
-    // For valid expressions, remainder should be zero
-    // We'll use the quotient even if remainder is non-zero (for testing tampering)
-
-    Expression {
-        name,
-        lhs: lhs_poly,
-        rhs: rhs_terms,
-        quotient: Some(quotient),
     }
 }

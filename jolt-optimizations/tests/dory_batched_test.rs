@@ -6,104 +6,7 @@ use jolt_optimizations::batched_expressions::verify_batched_expressions;
 use jolt_optimizations::dory_fq12_utils::{pow_fq12, DoryState};
 use jolt_optimizations::{fq12_to_poly12_coeffs, g_coeffs};
 
-mod test_helpers;
-
 use jolt_optimizations::batched_expressions::Expression;
-
-/// Generate Dory expressions with proper polynomial quotients for testing
-fn generate_test_dory_expressions(
-    state: &DoryState,
-    round: usize,
-    alpha: Fq,
-    beta: Fq,
-    gamma: Fq,
-    s1_tilde: Fq,
-    s2_tilde: Fq,
-) -> Vec<Expression> {
-    let mut expressions = Vec::new();
-    
-    let alpha_inv = alpha.inverse().unwrap();
-    let beta_inv = beta.inverse().unwrap();
-    let gamma_inv = gamma.inverse().unwrap();
-    
-    // C update expression
-    let c_new = state.compute_c_update(round, alpha, beta);
-    expressions.push(test_helpers::create_test_expression_with_quotient(
-        format!("C_update_round_{}", round),
-        c_new,
-        vec![
-            (state.c, Fq::one()),
-            (state.chi[round], Fq::one()),
-            (state.d2, beta),
-            (state.d1, beta_inv),
-            (state.c_plus, alpha),
-            (state.c_minus, alpha_inv),
-        ],
-    ));
-    
-    // D1 update expression
-    let d1_new = state.compute_d1_update(alpha, beta);
-    expressions.push(test_helpers::create_test_expression_with_quotient(
-        format!("D1_update_round_{}", round),
-        d1_new,
-        vec![
-            (state.d1l, alpha),
-            (state.d1r, Fq::one()),
-            (state.delta_1l, alpha * beta),
-            (state.delta_1r, beta),
-        ],
-    ));
-    
-    // D2 update expression
-    let d2_new = state.compute_d2_update(alpha, beta);
-    expressions.push(test_helpers::create_test_expression_with_quotient(
-        format!("D2_update_round_{}", round),
-        d2_new,
-        vec![
-            (state.d2l, alpha_inv),
-            (state.d2r, Fq::one()),
-            (state.delta_2l, alpha_inv * beta_inv),
-            (state.delta_2r, beta_inv),
-        ],
-    ));
-    
-    // C fold expression
-    let c_fold = state.compute_c_fold(gamma, s1_tilde, s2_tilde);
-    expressions.push(test_helpers::create_test_expression_with_quotient(
-        format!("C_fold_round_{}", round),
-        c_fold,
-        vec![
-            (state.c, Fq::one()),
-            (state.h_t, s1_tilde * s2_tilde),
-            (state.e_h1_e2, gamma),
-            (state.e_e1_h2, gamma_inv),
-        ],
-    ));
-    
-    // D1 fold expression
-    let d1_fold = state.compute_d1_fold(gamma, s1_tilde);
-    expressions.push(test_helpers::create_test_expression_with_quotient(
-        format!("D1_fold_round_{}", round),
-        d1_fold,
-        vec![
-            (state.d1, Fq::one()),
-            (state.e_h1_gamma2, s1_tilde * gamma),
-        ],
-    ));
-    
-    // D2 fold expression
-    let d2_fold = state.compute_d2_fold(gamma, s2_tilde);
-    expressions.push(test_helpers::create_test_expression_with_quotient(
-        format!("D2_fold_round_{}", round),
-        d2_fold,
-        vec![
-            (state.d2, Fq::one()),
-            (state.e_gamma1_h2, s2_tilde * gamma_inv),
-        ],
-    ));
-    
-    expressions
-}
 
 #[test]
 fn test_dory_single_round_valid() {
@@ -128,9 +31,7 @@ fn test_dory_single_round_valid() {
     let _d2_fold = state.compute_d2_fold(gamma, s2_tilde);
 
     // Generate expressions with proper quotients
-    let expressions = generate_test_dory_expressions(
-        &state, 0, alpha, beta, gamma, s1_tilde, s2_tilde,
-    );
+    let expressions = state.generate_round_expressions(0, alpha, beta, gamma, s1_tilde, s2_tilde);
 
     // Verify at random point
     let r = Fq::rand(&mut rng);
@@ -167,10 +68,8 @@ fn test_dory_multi_round_valid() {
         let s1_tilde = Fq::rand(&mut rng);
         let s2_tilde = Fq::rand(&mut rng);
 
-        let round_expressions = generate_test_dory_expressions(
-            &state,
-            round, alpha, beta, gamma, s1_tilde, s2_tilde,
-        );
+        let round_expressions =
+            state.generate_round_expressions(round, alpha, beta, gamma, s1_tilde, s2_tilde);
         all_expressions.extend(round_expressions);
     }
 
@@ -205,15 +104,14 @@ fn test_dory_tampering_detection() {
     let s2_tilde = Fq::rand(&mut rng);
 
     // Generate valid expressions
-    let mut expressions = state.generate_round_expressions(
-        0, alpha, beta, gamma, s1_tilde, s2_tilde,
-    );
+    let mut expressions =
+        state.generate_round_expressions(0, alpha, beta, gamma, s1_tilde, s2_tilde);
 
     // Tamper with the first expression's LHS
     let tampered_c = state.c + Fq12::one(); // Add 1 to C
-    let tampered_expression = test_helpers::create_test_expression_with_quotient(
+    let tampered_expression = Expression::from_fq12_with_quotient(
         "tampered_C".to_string(),
-        tampered_c,
+        &tampered_c,
         vec![
             (state.c, Fq::one()),
             (state.chi[0], Fq::one()),
@@ -252,9 +150,9 @@ fn test_dory_wrong_exponent_detection() {
     let d1_correct = state.compute_d1_update(alpha, beta);
 
     // Create a expression with wrong exponent
-    let wrong_expression = test_helpers::create_test_expression_with_quotient(
+    let wrong_expression = Expression::from_fq12_with_quotient(
         "D1_wrong_exp".to_string(),
-        d1_correct,
+        &d1_correct,
         vec![
             (state.d1l, alpha + Fq::one()), // Wrong exponent!
             (state.d1r, Fq::one()),
@@ -290,7 +188,7 @@ fn test_dory_naive_vs_batched() {
     // Compute updates naively in Fq12
     let alpha_inv = alpha.inverse().unwrap();
     let beta_inv = beta.inverse().unwrap();
-    let gamma_inv = gamma.inverse().unwrap();
+    let _gamma_inv = gamma.inverse().unwrap();
 
     // Naive C update
     let c_naive = state.c
@@ -310,9 +208,7 @@ fn test_dory_naive_vs_batched() {
     );
 
     // Generate expressions and verify
-    let expressions = state.generate_round_expressions(
-        0, alpha, beta, gamma, s1_tilde, s2_tilde,
-    );
+    let expressions = state.generate_round_expressions(0, alpha, beta, gamma, s1_tilde, s2_tilde);
 
     let r = Fq::rand(&mut rng);
     let gammas = vec![Fq::one(); expressions.len()];
@@ -333,9 +229,9 @@ fn test_dory_zero_exponent() {
     // Create a expression with zero exponent (should contribute 1)
     let result = state.c + Fq12::one(); // c + 1
 
-    let expression = test_helpers::create_test_expression_with_quotient(
+    let expression = Expression::from_fq12_with_quotient(
         "zero_exp_test".to_string(),
-        result,
+        &result,
         vec![
             (state.c, Fq::one()),
             (state.d1, Fq::from(0u64)), // Zero exponent - should contribute 1
@@ -350,43 +246,4 @@ fn test_dory_zero_exponent() {
 
     let result = verify_batched_expressions(&[expression], r, &gammas, &g_array);
     assert!(result.ok, "Zero exponent expression should verify");
-}
-
-#[test]
-fn test_dory_large_batch() {
-    let mut rng = test_rng();
-    let num_rounds = 10;
-
-    // Initialize Dory state
-    let state = DoryState::random(num_rounds);
-
-    // Generate expressions for all rounds
-    let mut all_expressions = Vec::new();
-
-    for round in 0..num_rounds {
-        let alpha = Fq::rand(&mut rng);
-        let beta = Fq::rand(&mut rng);
-        let gamma = Fq::rand(&mut rng);
-        let s1_tilde = Fq::rand(&mut rng);
-        let s2_tilde = Fq::rand(&mut rng);
-
-        let round_expressions = generate_test_dory_expressions(
-            &state,
-            round, alpha, beta, gamma, s1_tilde, s2_tilde,
-        );
-        all_expressions.extend(round_expressions);
-    }
-
-    println!("Testing batch of {} expressions", all_expressions.len());
-
-    // Verify with random linear combination
-    let r = Fq::rand(&mut rng);
-    let gammas: Vec<Fq> = (0..all_expressions.len())
-        .map(|_| Fq::rand(&mut rng))
-        .collect();
-    let g = g_coeffs();
-    let g_array: [Fq; 13] = g.try_into().unwrap();
-
-    let result = verify_batched_expressions(&all_expressions, r, &gammas, &g_array);
-    assert!(result.ok, "Large batch should verify");
 }
