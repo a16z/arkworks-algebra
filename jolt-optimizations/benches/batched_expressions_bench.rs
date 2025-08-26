@@ -35,7 +35,7 @@ fn bench_dory_verification(c: &mut Criterion) {
             all_expressions.extend(round_expressions);
         }
         println!("Total expressions generated: {}", all_expressions.len());
-        
+
         // The expressions already have proper quotients computed from Fq12 values
         println!("Expressions with quotients ready!");
 

@@ -171,12 +171,30 @@ impl DoryState {
             format!("C_update_round_{}", round),
             fq12_to_poly12_coeffs(&c_new),
             vec![
-                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.c), exponent: Fq::one() },
-                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.chi[round]), exponent: Fq::one() },
-                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.d2), exponent: beta },
-                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.d1), exponent: beta_inv },
-                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.c_plus), exponent: alpha },
-                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.c_minus), exponent: alpha_inv },
+                ExpressionTerm {
+                    poly: fq12_to_poly12_coeffs(&self.c),
+                    exponent: Fq::one(),
+                },
+                ExpressionTerm {
+                    poly: fq12_to_poly12_coeffs(&self.chi[round]),
+                    exponent: Fq::one(),
+                },
+                ExpressionTerm {
+                    poly: fq12_to_poly12_coeffs(&self.d2),
+                    exponent: beta,
+                },
+                ExpressionTerm {
+                    poly: fq12_to_poly12_coeffs(&self.d1),
+                    exponent: beta_inv,
+                },
+                ExpressionTerm {
+                    poly: fq12_to_poly12_coeffs(&self.c_plus),
+                    exponent: alpha,
+                },
+                ExpressionTerm {
+                    poly: fq12_to_poly12_coeffs(&self.c_minus),
+                    exponent: alpha_inv,
+                },
             ],
         ));
 
@@ -185,10 +203,22 @@ impl DoryState {
             format!("D1_update_round_{}", round),
             fq12_to_poly12_coeffs(&d1_new),
             vec![
-                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.d1l), exponent: alpha },
-                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.d1r), exponent: Fq::one() },
-                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.delta_1l), exponent: alpha * beta },
-                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.delta_1r), exponent: beta },
+                ExpressionTerm {
+                    poly: fq12_to_poly12_coeffs(&self.d1l),
+                    exponent: alpha,
+                },
+                ExpressionTerm {
+                    poly: fq12_to_poly12_coeffs(&self.d1r),
+                    exponent: Fq::one(),
+                },
+                ExpressionTerm {
+                    poly: fq12_to_poly12_coeffs(&self.delta_1l),
+                    exponent: alpha * beta,
+                },
+                ExpressionTerm {
+                    poly: fq12_to_poly12_coeffs(&self.delta_1r),
+                    exponent: beta,
+                },
             ],
         ));
 
@@ -197,10 +227,22 @@ impl DoryState {
             format!("D2_update_round_{}", round),
             fq12_to_poly12_coeffs(&d2_new),
             vec![
-                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.d2l), exponent: alpha_inv },
-                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.d2r), exponent: Fq::one() },
-                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.delta_2l), exponent: alpha_inv * beta_inv },
-                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.delta_2r), exponent: beta_inv },
+                ExpressionTerm {
+                    poly: fq12_to_poly12_coeffs(&self.d2l),
+                    exponent: alpha_inv,
+                },
+                ExpressionTerm {
+                    poly: fq12_to_poly12_coeffs(&self.d2r),
+                    exponent: Fq::one(),
+                },
+                ExpressionTerm {
+                    poly: fq12_to_poly12_coeffs(&self.delta_2l),
+                    exponent: alpha_inv * beta_inv,
+                },
+                ExpressionTerm {
+                    poly: fq12_to_poly12_coeffs(&self.delta_2r),
+                    exponent: beta_inv,
+                },
             ],
         ));
 
@@ -209,10 +251,22 @@ impl DoryState {
             format!("C_fold_round_{}", round),
             fq12_to_poly12_coeffs(&c_fold),
             vec![
-                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.c), exponent: Fq::one() },
-                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.h_t), exponent: s1_tilde * s2_tilde },
-                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.e_h1_e2), exponent: gamma },
-                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.e_e1_h2), exponent: gamma_inv },
+                ExpressionTerm {
+                    poly: fq12_to_poly12_coeffs(&self.c),
+                    exponent: Fq::one(),
+                },
+                ExpressionTerm {
+                    poly: fq12_to_poly12_coeffs(&self.h_t),
+                    exponent: s1_tilde * s2_tilde,
+                },
+                ExpressionTerm {
+                    poly: fq12_to_poly12_coeffs(&self.e_h1_e2),
+                    exponent: gamma,
+                },
+                ExpressionTerm {
+                    poly: fq12_to_poly12_coeffs(&self.e_e1_h2),
+                    exponent: gamma_inv,
+                },
             ],
         ));
 
@@ -221,8 +275,14 @@ impl DoryState {
             format!("D1_fold_round_{}", round),
             fq12_to_poly12_coeffs(&d1_fold),
             vec![
-                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.d1), exponent: Fq::one() },
-                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.e_h1_gamma2), exponent: s1_tilde * gamma },
+                ExpressionTerm {
+                    poly: fq12_to_poly12_coeffs(&self.d1),
+                    exponent: Fq::one(),
+                },
+                ExpressionTerm {
+                    poly: fq12_to_poly12_coeffs(&self.e_h1_gamma2),
+                    exponent: s1_tilde * gamma,
+                },
             ],
         ));
 
@@ -231,8 +291,14 @@ impl DoryState {
             format!("D2_fold_round_{}", round),
             fq12_to_poly12_coeffs(&d2_fold),
             vec![
-                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.d2), exponent: Fq::one() },
-                ExpressionTerm { poly: fq12_to_poly12_coeffs(&self.e_gamma1_h2), exponent: s2_tilde * gamma_inv },
+                ExpressionTerm {
+                    poly: fq12_to_poly12_coeffs(&self.d2),
+                    exponent: Fq::one(),
+                },
+                ExpressionTerm {
+                    poly: fq12_to_poly12_coeffs(&self.e_gamma1_h2),
+                    exponent: s2_tilde * gamma_inv,
+                },
             ],
         ));
 

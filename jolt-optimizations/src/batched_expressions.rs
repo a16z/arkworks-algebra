@@ -6,8 +6,7 @@ use ark_bn254::Fq;
 use ark_ff::{Field, One, PrimeField, Zero};
 
 use crate::{
-    compute_quotient::compute_quotient_direct,
-    eval_poly12, eval_poly_vec, g_coeffs, g_eval,
+    compute_quotient::compute_quotient_direct, eval_poly12, eval_poly_vec, g_coeffs, g_eval,
 };
 
 pub type Poly12 = [Fq; 12];
@@ -39,11 +38,11 @@ impl Expression {
             .iter()
             .map(|term| (term.poly.to_vec(), term.exponent))
             .collect();
-        
+
         let g = g_coeffs();
-        let quotient = compute_quotient_direct(&lhs_vec, &rhs_terms, &g)
-            .expect("Failed to compute quotient");
-        
+        let quotient =
+            compute_quotient_direct(&lhs_vec, &rhs_terms, &g).expect("Failed to compute quotient");
+
         Expression {
             name,
             lhs,
@@ -51,7 +50,7 @@ impl Expression {
             quotient: Some(quotient),
         }
     }
-    
+
     /// Create an expression without computing quotient (for testing)
     pub fn without_quotient(name: String, lhs: Poly12, rhs: Vec<ExpressionTerm>) -> Self {
         Expression {
@@ -61,19 +60,20 @@ impl Expression {
             quotient: None,
         }
     }
-    
+
     /// Compute and attach quotient to an expression
     pub fn compute_quotient(&mut self) {
         let lhs_vec = self.lhs.to_vec();
-        let rhs_terms: Vec<(Vec<Fq>, Fq)> = self.rhs
+        let rhs_terms: Vec<(Vec<Fq>, Fq)> = self
+            .rhs
             .iter()
             .map(|term| (term.poly.to_vec(), term.exponent))
             .collect();
-        
+
         let g = g_coeffs();
-        let quotient = compute_quotient_direct(&lhs_vec, &rhs_terms, &g)
-            .expect("Failed to compute quotient");
-        
+        let quotient =
+            compute_quotient_direct(&lhs_vec, &rhs_terms, &g).expect("Failed to compute quotient");
+
         self.quotient = Some(quotient);
     }
 }

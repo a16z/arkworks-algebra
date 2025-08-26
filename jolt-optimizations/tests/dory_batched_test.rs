@@ -2,7 +2,9 @@ use ark_bn254::{Fq, Fq12};
 use ark_ff::{Field, One, UniformRand};
 use ark_std::test_rng;
 
-use jolt_optimizations::batched_expressions::{verify_batched_expressions, Expression, ExpressionTerm};
+use jolt_optimizations::batched_expressions::{
+    verify_batched_expressions, Expression, ExpressionTerm,
+};
 use jolt_optimizations::dory_fq12_utils::{pow_fq12, DoryState};
 use jolt_optimizations::fq12_to_poly12_coeffs;
 
@@ -107,12 +109,30 @@ fn test_dory_tampering_detection() {
         "tampered_C".to_string(),
         fq12_to_poly12_coeffs(&tampered_c),
         vec![
-            ExpressionTerm { poly: fq12_to_poly12_coeffs(&state.c), exponent: Fq::one() },
-            ExpressionTerm { poly: fq12_to_poly12_coeffs(&state.chi[0]), exponent: Fq::one() },
-            ExpressionTerm { poly: fq12_to_poly12_coeffs(&state.d2), exponent: beta },
-            ExpressionTerm { poly: fq12_to_poly12_coeffs(&state.d1), exponent: beta.inverse().unwrap() },
-            ExpressionTerm { poly: fq12_to_poly12_coeffs(&state.c_plus), exponent: alpha },
-            ExpressionTerm { poly: fq12_to_poly12_coeffs(&state.c_minus), exponent: alpha.inverse().unwrap() },
+            ExpressionTerm {
+                poly: fq12_to_poly12_coeffs(&state.c),
+                exponent: Fq::one(),
+            },
+            ExpressionTerm {
+                poly: fq12_to_poly12_coeffs(&state.chi[0]),
+                exponent: Fq::one(),
+            },
+            ExpressionTerm {
+                poly: fq12_to_poly12_coeffs(&state.d2),
+                exponent: beta,
+            },
+            ExpressionTerm {
+                poly: fq12_to_poly12_coeffs(&state.d1),
+                exponent: beta.inverse().unwrap(),
+            },
+            ExpressionTerm {
+                poly: fq12_to_poly12_coeffs(&state.c_plus),
+                exponent: alpha,
+            },
+            ExpressionTerm {
+                poly: fq12_to_poly12_coeffs(&state.c_minus),
+                exponent: alpha.inverse().unwrap(),
+            },
         ],
     );
 
@@ -146,10 +166,22 @@ fn test_dory_wrong_exponent_detection() {
         "D1_wrong_exp".to_string(),
         fq12_to_poly12_coeffs(&d1_correct),
         vec![
-            ExpressionTerm { poly: fq12_to_poly12_coeffs(&state.d1l), exponent: alpha + Fq::one() }, // Wrong exponent!
-            ExpressionTerm { poly: fq12_to_poly12_coeffs(&state.d1r), exponent: Fq::one() },
-            ExpressionTerm { poly: fq12_to_poly12_coeffs(&state.delta_1l), exponent: alpha * beta },
-            ExpressionTerm { poly: fq12_to_poly12_coeffs(&state.delta_1r), exponent: beta },
+            ExpressionTerm {
+                poly: fq12_to_poly12_coeffs(&state.d1l),
+                exponent: alpha + Fq::one(),
+            }, // Wrong exponent!
+            ExpressionTerm {
+                poly: fq12_to_poly12_coeffs(&state.d1r),
+                exponent: Fq::one(),
+            },
+            ExpressionTerm {
+                poly: fq12_to_poly12_coeffs(&state.delta_1l),
+                exponent: alpha * beta,
+            },
+            ExpressionTerm {
+                poly: fq12_to_poly12_coeffs(&state.delta_1r),
+                exponent: beta,
+            },
         ],
     );
 
@@ -221,8 +253,14 @@ fn test_dory_zero_exponent() {
         "zero_exp_test".to_string(),
         fq12_to_poly12_coeffs(&result),
         vec![
-            ExpressionTerm { poly: fq12_to_poly12_coeffs(&state.c), exponent: Fq::one() },
-            ExpressionTerm { poly: fq12_to_poly12_coeffs(&state.d1), exponent: Fq::from(0u64) }, // Zero exponent - should contribute 1
+            ExpressionTerm {
+                poly: fq12_to_poly12_coeffs(&state.c),
+                exponent: Fq::one(),
+            },
+            ExpressionTerm {
+                poly: fq12_to_poly12_coeffs(&state.d1),
+                exponent: Fq::from(0u64),
+            }, // Zero exponent - should contribute 1
         ],
     );
 
