@@ -38,6 +38,9 @@ pub use cyclotomic::*;
 mod sqrt;
 pub use sqrt::*;
 
+mod cbrt;
+pub use cbrt::*;
+
 #[cfg(feature = "parallel")]
 use ark_std::cmp::max;
 #[cfg(feature = "parallel")]

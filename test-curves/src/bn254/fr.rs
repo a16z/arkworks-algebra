@@ -15,3 +15,20 @@ pub type Fr = Fp256<MontBackend<FrConfig, 4>>;
 
 pub const FR_ONE: Fr = ark_ff::MontFp!("1");
 pub const FR_ZERO: Fr = ark_ff::MontFp!("0");
+
+// For use in Tonelli-Shanks cube root finding.
+// modulus - 1 = 3^s * t
+
+// s = 2
+pub const FR_THREE_ADICITY: usize = 2;
+// t = 2432026985759919469138489527250808343172040488935114927077578242952867610624
+pub const FR_TRACE_OF_MODULUS_MINUS_ONE: Fr =
+    ark_ff::MontFp!("2432026985759919469138489527250808343172040488935114927077578242952867610624");
+
+// (t - 1) / 3
+pub const FR_TRACE_MINUS_ONE_DIV_BY_THREE: bool = true;
+pub const FR_TRACE_PLUS_OR_MINUS_ONE_DIV_THREE: Fr =
+    ark_ff::MontFp!("28586639823046163175750269447724013496311704975692526080984289203541");
+
+
+
