@@ -63,7 +63,8 @@ pub fn cube_root_tonelli_shanks<F: Field>(
 
 #[cfg(test)]
 mod tests {
-    use crate::BigInt;
+    use core::str::FromStr;
+    use ark_test_curves::bn254::fr::Fr;
 
     use super::*;
 
@@ -82,8 +83,13 @@ mod tests {
     fn test_find_cubic_nonresidue() {
         // (21888242871839275222246405745257275088548364400416034343698204186575808495617 - 1) // 3
 
-        // let char_minus_1_div_three = BigInt::from("7296080957279758407415468581752425029516121466805344781232734728858602831872");
+        let char_minus_1_div_three = num_bigint::BigUint::from_str(
+            "7296080957279758407415468581752425029516121466805344781232734728858602831872",
+        )
+        .unwrap()
+        .to_u64_digits();
 
-        todo!()
+        let nonresidue = find_cubic_nonresidue::<Fr>(&char_minus_1_div_three);
+        panic!("nonresidue: {:?}", nonresidue);
     }
 }

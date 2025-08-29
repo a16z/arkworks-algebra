@@ -21,3 +21,13 @@ test_field!(fq; Fq; mont_prime_field);
 test_group!(g1; G1Projective; sw);
 
 // Add other tests for G2, Pairing etc. as needed
+
+#[cfg(test)]
+mod test {
+    use ark_ff::cube_root_tonelli_shanks;
+
+    #[test]
+    fn test_cube_root() {
+        cube_root_tonelli_shanks(
+    }
+} 
