@@ -2,6 +2,10 @@ use core::array::from_fn;
 
 use crate::Field;
 
+// Pairing value compression paper
+// https://eprint.iacr.org/2005/133.pdf
+// Cube root paper
+// https://eprint.iacr.org/2009/457.pdf
 pub enum CbrtPrecomputation<F: Field> {
     TonelliShanks {
         three_adicity: u32,
