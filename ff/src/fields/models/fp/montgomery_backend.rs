@@ -457,6 +457,10 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
         }
     }
 
+    fn from_bigint_unchecked(r: BigInt<N>) -> Option<Fp<MontBackend<Self, N>, N>> {
+        Some(Fp::new_unchecked(r))
+    }
+
     fn from_bigint(r: BigInt<N>) -> Option<Fp<MontBackend<Self, N>, N>> {
         let mut r = Fp::new_unchecked(r);
         if r.is_zero() {
@@ -791,6 +795,10 @@ impl<T: MontConfig<N>, const N: usize> FpConfig<N> for MontBackend<T, N> {
         T::from_bigint(r)
     }
 
+    fn from_bigint_unchecked(r: BigInt<N>) -> Option<Fp<Self, N>> {
+        T::from_bigint_unchecked(r)
+    }
+
     #[inline]
     #[allow(clippy::modulo_one)]
     fn into_bigint(a: Fp<Self, N>) -> BigInt<N> {
@@ -1002,6 +1010,170 @@ impl<T: MontConfig<N>, const N: usize> Fp<MontBackend<T, N>, N> {
         let r2 = barrett_reduce_nplus1_to_n::<T, N>(c2); // r2 = c2 mod p = c mod p ([u64; N])
 
         Self::new_unchecked(BigInt::<N>(r2))
+    }
+
+    #[inline]
+    pub const fn mul_two_u128s(&self, a:u128, b:u128)->Self{
+        todo!()
+    }
+
+    /// Multiply-assign by a RHS that is zero in its low N-2 limbs in Montgomery limbs,
+    /// and whose highest two limbs are provided by `hi` (low 64 bits map to limb N-2,
+    /// high 64 bits map to limb N-1). This is equivalent to K=2 non-zero high limbs.
+    #[inline]
+    pub const fn mul_assign_hi_u128(&mut self, hi: u128) {
+        // Construct a synthetic RHS by using the const CIOS with K=2, passing limbs directly.
+        // Leverage existing const CIOS specialized by K via a tiny adapter.
+        *self = self.const_cios_mul_rhs_hi2(hi as u64, (hi >> 64) as u64);
+    }
+ 
+    /// Returns self * rhs_high_limbs, where RHS is zero in low N-2 limbs and has its top two
+    /// limbs provided by `hi` (low 64 -> limb N-2, high 64 -> limb N-1). Equivalent to K=2.
+    #[inline]
+    pub const fn mul_hi_u128(self, hi: u128) -> Self {
+        self.const_cios_mul_rhs_hi2(hi as u64, (hi >> 64) as u64)
+    }
+
+    /// Const-capable CIOS fastpath specialized for exactly two high limbs (K=2), passed
+    /// directly as u64s instead of via an Fp operand. Assumes all lower limbs are zero.
+    #[inline]
+    #[allow(unused_assignments)]
+    const fn const_cios_mul_rhs_hi2(self, limb_n2: u64, limb_n1: u64) -> Self {
+        let mut r = [0u64; N];
+        // i = N-2
+        if N >= 2 {
+            let mut carry1 = 0u64;
+            r[0] = mac!(r[0], (self.0).0[0], limb_n2, &mut carry1);
+            let k = r[0].wrapping_mul(T::INV);
+            let mut carry2 = 0u64;
+            let _discard = mac!(r[0], k, T::MODULUS.0[0], &mut carry2);
+            crate::const_for!((j in 1..N) {
+                let new_rj = mac_with_carry!(r[j], (self.0).0[j], limb_n2, &mut carry1);
+                let new_rj_minus_1 = mac_with_carry!(new_rj, k, T::MODULUS.0[j], &mut carry2);
+                r[j] = new_rj;
+                r[j - 1] = new_rj_minus_1;
+            });
+            r[N - 1] = carry1.wrapping_add(carry2);
+        }
+        // i = N-1
+        {
+            let mut carry1 = 0u64;
+            r[0] = mac!(r[0], (self.0).0[0], limb_n1, &mut carry1);
+            let k = r[0].wrapping_mul(T::INV);
+            let mut carry2 = 0u64;
+            let _discard = mac!(r[0], k, T::MODULUS.0[0], &mut carry2);
+            crate::const_for!((j in 1..N) {
+                let new_rj = mac_with_carry!(r[j], (self.0).0[j], limb_n1, &mut carry1);
+                let new_rj_minus_1 = mac_with_carry!(new_rj, k, T::MODULUS.0[j], &mut carry2);
+                r[j] = new_rj;
+                r[j - 1] = new_rj_minus_1;
+            });
+            r[N - 1] = carry1.wrapping_add(carry2);
+        }
+        let mut out = Self::new_unchecked(crate::BigInt::<N>(r));
+        out = out.const_subtract_modulus();
+        out
+    }
+
+    /// Multiply-assign by a BigInt<K> that populates the highest K Montgomery limbs of the RHS,
+    /// with all lower limbs zero. Lower 64 bits of `rhs_hi.0[0]` map to limb N-K, etc.
+    #[inline]
+    pub const fn mul_assign_hi_bigint<const K: usize>(&mut self, rhs_hi: &crate::BigInt<K>) {
+        if T::CAN_USE_NO_CARRY_MUL_OPT {
+            *self = self.const_cios_mul_rhs_hi::<K>(rhs_hi);
+        } else {
+            let (carry, res) = self.mul_without_cond_subtract_rhs_hi::<K>(rhs_hi);
+            *self = res;
+            if T::MODULUS_HAS_SPARE_BIT {
+                self.const_subtract_modulus();
+            } else {
+                self.const_subtract_modulus_with_carry(carry);
+            }
+        }
+    }
+
+    /// Returns self * BigInt<K> that populates the highest K Montgomery limbs of the RHS,
+    /// with all lower limbs zero.
+    #[inline]
+    pub const fn mul_hi_bigint<const K: usize>(self, rhs_hi: &crate::BigInt<K>) -> Self {
+        if T::CAN_USE_NO_CARRY_MUL_OPT {
+            self.const_cios_mul_rhs_hi::<K>(rhs_hi)
+        } else {
+            let (carry, res) = self.mul_without_cond_subtract_rhs_hi::<K>(rhs_hi);
+            if T::MODULUS_HAS_SPARE_BIT {
+                res.const_subtract_modulus()
+            } else {
+                res.const_subtract_modulus_with_carry(carry)
+            }
+        }
+    }
+
+    /// Const-capable CIOS kernel for a RHS with exactly K non-zero HIGH limbs provided via BigInt<K>.
+    #[inline]
+    #[allow(unused_assignments)]
+    const fn const_cios_mul_rhs_hi<const K: usize>(self, rhs_hi: &crate::BigInt<K>) -> Self {
+        let mut r = [0u64; N];
+        // Iterate high columns: t indexes 0..K-1 mapping to global i = N-K+t
+        crate::const_for!((t in 0..K) {
+            let b_i = rhs_hi.0[t];
+            let mut carry1 = 0u64;
+            r[0] = mac!(r[0], (self.0).0[0], b_i, &mut carry1);
+            let k = r[0].wrapping_mul(T::INV);
+            let mut carry2 = 0u64;
+            let _discard = mac!(r[0], k, T::MODULUS.0[0], &mut carry2);
+            crate::const_for!((j in 1..N) {
+                let new_rj = mac_with_carry!(r[j], (self.0).0[j], b_i, &mut carry1);
+                let new_rj_minus_1 = mac_with_carry!(new_rj, k, T::MODULUS.0[j], &mut carry2);
+                r[j] = new_rj;
+                r[j - 1] = new_rj_minus_1;
+            });
+            r[N - 1] = carry1.wrapping_add(carry2);
+        });
+        let mut out = Self::new_unchecked(crate::BigInt::<N>(r));
+        out = out.const_subtract_modulus();
+        out
+    }
+
+    /// Two-phase (schoolbook+REDC) multiply with a RHS whose highest K limbs are provided
+    /// in `rhs_hi` and lower limbs are zero.
+    #[inline]
+    const fn mul_without_cond_subtract_rhs_hi<const K: usize>(mut self, rhs_hi: &crate::BigInt<K>) -> (bool, Self) {
+        let (mut lo, mut hi) = ([0u64; N], [0u64; N]);
+        // Schoolbook: only columns j in [N-K, N)
+        crate::const_for!((i in 0..N) {
+            let mut carry = 0u64;
+            crate::const_for!((t in 0..K) {
+                let j = N - K + t;
+                let b = rhs_hi.0[t];
+                let k = i + j;
+                if k >= N {
+                    hi[k - N] = mac_with_carry!(hi[k - N], (self.0).0[i], b, &mut carry);
+                } else {
+                    lo[k] = mac_with_carry!(lo[k], (self.0).0[i], b, &mut carry);
+                }
+            });
+            hi[i] = carry;
+        });
+        // REDC: only i in [N-K, N)
+        let mut carry2 = 0u64;
+        crate::const_for!((i in 0..N) {
+            if i < N - K { /* skip */ } else {
+                let tmp = lo[i].wrapping_mul(T::INV);
+                let mut carry;
+                mac!(lo[i], tmp, T::MODULUS.0[0], &mut carry);
+                crate::const_for!((j in 1..N) {
+                    let k = i + j;
+                    if k >= N {
+                        hi[k - N] = mac_with_carry!(hi[k - N], tmp, T::MODULUS.0[j], &mut carry);
+                    }  else {
+                        lo[k] = mac_with_carry!(lo[k], tmp, T::MODULUS.0[j], &mut carry);
+                    }
+                });
+                hi[i] = adc!(hi[i], carry, &mut carry2);
+            }
+        });
+        crate::const_for!((i in 0..N) { (self.0).0[i] = hi[i]; });
+        (carry2 != 0, self)
     }
 
     const fn const_is_valid(&self) -> bool {

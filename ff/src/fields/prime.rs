@@ -54,10 +54,13 @@ pub trait PrimeField:
     /// Construct a prime field element from an integer in the range 0..(p - 1).
     fn from_bigint(repr: Self::BigInt) -> Option<Self>;
 
+    /// Construct a prime field element from an integer in the range 0..(p - 1) (no reductions)
+    fn from_bigint_unchecked(repr: Self::BigInt) -> Option<Self>;
+
     /// Converts an element of the prime field into an integer in the range 0..(p - 1).
     fn into_bigint(self) -> Self::BigInt;
 
-    /// Creates a field element from a `u64`. 
+    /// Creates a field element from a `u64`.
     /// Returns `None` if the `u64` is larger than or equal to the modulus.
     fn from_u64(val: u64) -> Option<Self>;
 
