@@ -1013,7 +1013,7 @@ impl<T: MontConfig<N>, const N: usize> Fp<MontBackend<T, N>, N> {
     }
 
     #[inline]
-    pub const fn mul_two_u128s(&self, a:u128, b:u128)->Self{
+    pub const fn mul_two_u128s(&self, a: u128, b: u128) -> Self {
         todo!()
     }
 
@@ -1026,12 +1026,20 @@ impl<T: MontConfig<N>, const N: usize> Fp<MontBackend<T, N>, N> {
         // Leverage existing const CIOS specialized by K via a tiny adapter.
         *self = self.const_cios_mul_rhs_hi2(hi as u64, (hi >> 64) as u64);
     }
- 
+
     /// Returns self * rhs_high_limbs, where RHS is zero in low N-2 limbs and has its top two
     /// limbs provided by `hi` (low 64 -> limb N-2, high 64 -> limb N-1). Equivalent to K=2.
     #[inline]
     pub const fn mul_hi_u128(self, hi: u128) -> Self {
         self.const_cios_mul_rhs_hi2(hi as u64, (hi >> 64) as u64)
+    }
+
+    /// Returns self * rhs_high_limbs, where RHS is zero in low N-2 limbs and has its top two
+    /// limbs provided by `hi` (low 64 -> limb N-2, high 64 -> limb N-1). Equivalent to K=2.
+    /// This is really the same as the above but we don't always do shifts per multiplication.
+    #[inline]
+    pub const fn mul_hi_u128_no_shifts(self, hi: u64, lo: u64) -> Self {
+        self.const_cios_mul_rhs_hi2(lo, hi)
     }
 
     /// Const-capable CIOS fastpath specialized for exactly two high limbs (K=2), passed
@@ -1137,7 +1145,10 @@ impl<T: MontConfig<N>, const N: usize> Fp<MontBackend<T, N>, N> {
     /// Two-phase (schoolbook+REDC) multiply with a RHS whose highest K limbs are provided
     /// in `rhs_hi` and lower limbs are zero.
     #[inline]
-    const fn mul_without_cond_subtract_rhs_hi<const K: usize>(mut self, rhs_hi: &crate::BigInt<K>) -> (bool, Self) {
+    const fn mul_without_cond_subtract_rhs_hi<const K: usize>(
+        mut self,
+        rhs_hi: &crate::BigInt<K>,
+    ) -> (bool, Self) {
         let (mut lo, mut hi) = ([0u64; N], [0u64; N]);
         // Schoolbook: only columns j in [N-K, N)
         crate::const_for!((i in 0..N) {
