@@ -6,18 +6,17 @@
 ///
 /// Helper methods provide width-aware projections to `u64`/`i64` and a
 /// canonical unsigned representation for lookup key construction.
-use allocative::Allocative;
 use ark_serialize::{
     CanonicalDeserialize, CanonicalSerialize, Compress, SerializationError, Valid, Validate,
 };
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Allocative)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum U64OrI64 {
     Unsigned(u64),
     Signed(i64),
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Allocative)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum U128OrI128 {
     Unsigned(u128),
     Signed(i128),
@@ -101,6 +100,21 @@ impl U64OrI64 {
             _ => panic!("{XLEN}-bit word size is unsupported"),
         }
     }
+
+    /// Returns true if the value is negative.
+    #[inline]
+    pub fn is_negative(&self) -> bool {
+        match *self {
+            U64OrI64::Unsigned(_) => false,
+            U64OrI64::Signed(s) => s < 0,
+        }
+    }
+
+    /// Returns true if the value is nonnegative (>= 0).
+    #[inline]
+    pub fn is_positive(&self) -> bool {
+        !self.is_negative()
+    }
 }
 
 impl U128OrI128 {
@@ -118,6 +132,21 @@ impl U128OrI128 {
             U128OrI128::Unsigned(u) => u as i128,
             U128OrI128::Signed(s) => s,
         }
+    }
+
+    /// Returns true if the value is negative.
+    #[inline]
+    pub fn is_negative(&self) -> bool {
+        match *self {
+            U128OrI128::Unsigned(_) => false,
+            U128OrI128::Signed(s) => s < 0,
+        }
+    }
+
+    /// Returns true if the value is nonnegative (>= 0).
+    #[inline]
+    pub fn is_positive(&self) -> bool {
+        !self.is_negative()
     }
 }
 
@@ -208,7 +237,7 @@ impl Valid for U128OrI128 {
 }
 
 impl CanonicalSerialize for U64OrI64 {
-    fn serialize_with_mode<W: std::io::Write>(
+    fn serialize_with_mode<W: ark_std::io::Write>(
         &self,
         mut writer: W,
         compress: Compress,
@@ -235,7 +264,7 @@ impl CanonicalSerialize for U64OrI64 {
 }
 
 impl CanonicalDeserialize for U64OrI64 {
-    fn deserialize_with_mode<R: std::io::Read>(
+    fn deserialize_with_mode<R: ark_std::io::Read>(
         mut reader: R,
         compress: Compress,
         _validate: Validate,
@@ -256,7 +285,7 @@ impl CanonicalDeserialize for U64OrI64 {
 }
 
 impl CanonicalSerialize for U128OrI128 {
-    fn serialize_with_mode<W: std::io::Write>(
+    fn serialize_with_mode<W: ark_std::io::Write>(
         &self,
         mut writer: W,
         compress: Compress,
@@ -283,7 +312,7 @@ impl CanonicalSerialize for U128OrI128 {
 }
 
 impl CanonicalDeserialize for U128OrI128 {
-    fn deserialize_with_mode<R: std::io::Read>(
+    fn deserialize_with_mode<R: ark_std::io::Read>(
         mut reader: R,
         compress: Compress,
         _validate: Validate,
