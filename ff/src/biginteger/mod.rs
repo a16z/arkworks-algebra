@@ -30,7 +30,7 @@ use zeroize::Zeroize;
 pub mod arithmetic;
 
 pub mod types;
-pub use types::{U128OrI128, U64OrI64};
+pub use types::{U128AndSign, U64AndSign};
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Zeroize)]
 pub struct BigInt<const N: usize>(pub [u64; N]);

@@ -16,7 +16,7 @@ pub mod stream_pippenger;
 pub use stream_pippenger::*;
 
 use super::ScalarMul;
-use ark_ff::biginteger::{U128OrI128, U64OrI64};
+use ark_ff::biginteger::{U128AndSign, U64AndSign};
 
 #[cfg(all(
     target_has_atomic = "8",
@@ -648,7 +648,7 @@ pub fn msm_u128<V: VariableBaseMSM>(
 /// MSM over mixed-signed 64-bit integers using the small-scalar engine.
 pub fn msm_u64_or_i64<V: VariableBaseMSM>(
     mut bases: &[V::MulBase],
-    mut scalars: &[U64OrI64],
+    mut scalars: &[U64AndSign],
     serial: bool,
 ) -> V {
     // Partition by sign for better locality; build magnitudes as u64.
@@ -663,15 +663,10 @@ pub fn msm_u64_or_i64<V: VariableBaseMSM>(
             });
     let (negative_scalars, non_negative_scalars): (Vec<u64>, Vec<u64>) = scalars
         .iter()
-        .partition_map(|s| match *s {
-            U64OrI64::Unsigned(u) => Either::Right(u),
-            U64OrI64::Signed(v) => {
-                if v < 0 {
-                    Either::Left(v.unsigned_abs())
-                } else {
-                    Either::Right(v as u64)
-                }
-            }
+        .partition_map(|s| if s.is_negative() {
+            Either::Left(s.magnitude)
+        } else {
+            Either::Right(s.magnitude)
         });
 
     if serial {
@@ -698,30 +693,24 @@ pub fn msm_u64_or_i64<V: VariableBaseMSM>(
 /// MSM over mixed-signed 128-bit integers.
 pub fn msm_u128_or_i128<V: VariableBaseMSM>(
     mut bases: &[V::MulBase],
-    mut scalars: &[U128OrI128],
+    mut scalars: &[U128AndSign],
     serial: bool,
 ) -> V {
     // u128 path with sign partitioning.
     let (negative_bases, non_negative_bases): (Vec<V::MulBase>, Vec<V::MulBase>) = bases
         .iter()
         .enumerate()
-        .partition_map(|(i, b)| if match scalars[i] { U128OrI128::Signed(v) if v < 0 => true, _ => false } {
+        .partition_map(|(i, b)| if scalars[i].is_negative() {
             Either::Left(b)
         } else {
             Either::Right(b)
         });
     let (negative_scalars, non_negative_scalars): (Vec<u128>, Vec<u128>) = scalars
         .iter()
-        .partition_map(|s| match *s {
-            U128OrI128::Unsigned(u) => Either::Right(u),
-            U128OrI128::Signed(v) => {
-                let abs = v.unsigned_abs();
-                if v < 0 {
-                    Either::Left(abs)
-                } else {
-                    Either::Right(abs)
-                }
-            }
+        .partition_map(|s| if s.is_negative() {
+            Either::Left(s.magnitude)
+        } else {
+            Either::Right(s.magnitude)
         });
 
     if serial {

@@ -11,80 +11,100 @@ use ark_serialize::{
 };
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum U64OrI64 {
-    Unsigned(u64),
-    Signed(i64),
+pub struct U64AndSign {
+    pub magnitude: u64,
+    pub is_negative: bool,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum U128OrI128 {
-    Unsigned(u128),
-    Signed(i128),
+pub struct U128AndSign {
+    pub magnitude: u128,
+    pub is_negative: bool,
 }
 
-impl U64OrI64 {
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct U160AndSIgn {
+    pub magnitude_low: u128,
+    pub magnitude_high: u32,
+    pub is_negative: bool,
+}
+
+
+impl U64AndSign {
+    /// Construct a nonnegative value from an unsigned magnitude.
+    #[inline]
+    #[allow(non_snake_case)]
+    pub fn Unsigned(u: u64) -> Self {
+        Self {
+            magnitude: u,
+            is_negative: false,
+        }
+    }
+
+    /// Construct a value from a signed 64-bit word.
+    /// Negative zero is normalized to +0.
+    #[inline]
+    #[allow(non_snake_case)]
+    pub fn Signed(s: i64) -> Self {
+        if s >= 0 {
+            Self {
+                magnitude: s as u64,
+                is_negative: false,
+            }
+        } else {
+            let mag = (-(s as i128)) as u64;
+            Self {
+                magnitude: mag,
+                is_negative: mag != 0,
+            }
+        }
+    }
+
     /// Return the value as an unsigned 64-bit word (XLEN=64 view).
     #[inline]
     pub fn as_u64(&self) -> u64 {
-        match *self {
-            U64OrI64::Unsigned(u) => u,
-            U64OrI64::Signed(s) => s as u64,
-        }
+        self.magnitude
     }
 
     /// Return the value as an unsigned 32-bit word (XLEN=32 view).
     #[inline]
     pub fn as_u32(&self) -> u32 {
-        match *self {
-            U64OrI64::Unsigned(u) => u as u32,
-            U64OrI64::Signed(s) => s as u32,
-        }
+        self.magnitude as u32
     }
 
     /// Return the value as an unsigned 8-bit word (XLEN=8 view).
     #[inline]
     pub fn as_u8(&self) -> u8 {
-        match *self {
-            U64OrI64::Unsigned(u) => u as u8,
-            U64OrI64::Signed(s) => s as u8,
-        }
+        self.magnitude as u8
     }
 
     /// Return the value as a signed 64-bit word (XLEN=64 view).
     #[inline]
     pub fn as_i64(&self) -> i64 {
-        match *self {
-            U64OrI64::Unsigned(u) => u as i64,
-            U64OrI64::Signed(s) => s,
-        }
+        self.as_i128() as i64
     }
 
     /// Return the value as a signed 32-bit word (XLEN=32 view).
     /// This is a truncating conversion.
     #[inline]
     pub fn as_i32(&self) -> i32 {
-        match *self {
-            U64OrI64::Unsigned(u) => u as i32,
-            U64OrI64::Signed(s) => s as i32,
-        }
+        self.as_i128() as i32
     }
 
     /// Return the value as a signed 8-bit word (XLEN=8 view).
     /// This is a truncating conversion.
     #[inline]
     pub fn as_i8(&self) -> i8 {
-        match *self {
-            U64OrI64::Unsigned(u) => u as i8,
-            U64OrI64::Signed(s) => s as i8,
-        }
+        self.as_i128() as i8
     }
 
     /// Return the value widened to i128.
     #[inline]
     pub fn as_i128(&self) -> i128 {
-        match *self {
-            U64OrI64::Unsigned(u) => u as i128,
-            U64OrI64::Signed(s) => s as i128,
+        if self.is_negative && self.magnitude != 0 {
+            -(self.magnitude as i128)
+        } else {
+            self.magnitude as i128
         }
     }
 
@@ -104,10 +124,7 @@ impl U64OrI64 {
     /// Returns true if the value is negative.
     #[inline]
     pub fn is_negative(&self) -> bool {
-        match *self {
-            U64OrI64::Unsigned(_) => false,
-            U64OrI64::Signed(s) => s < 0,
-        }
+        self.is_negative && self.magnitude != 0
     }
 
     /// Returns true if the value is nonnegative (>= 0).
@@ -117,30 +134,59 @@ impl U64OrI64 {
     }
 }
 
-impl U128OrI128 {
+impl U128AndSign {
+    /// Construct a nonnegative value from an unsigned magnitude.
     #[inline]
-    pub fn as_u128(&self) -> u128 {
-        match *self {
-            U128OrI128::Unsigned(u) => u,
-            U128OrI128::Signed(s) => s as u128,
+    #[allow(non_snake_case)]
+    pub fn Unsigned(u: u128) -> Self {
+        Self {
+            magnitude: u,
+            is_negative: false,
+        }
+    }
+
+    /// Construct a value from a signed 128-bit word.
+    /// Negative zero is normalized to +0.
+    #[inline]
+    #[allow(non_snake_case)]
+    pub fn Signed(s: i128) -> Self {
+        if s >= 0 {
+            Self {
+                magnitude: s as u128,
+                is_negative: false,
+            }
+        } else {
+            // Handle i128::MIN without overflow
+            let mag = if s == i128::MIN {
+                1u128 << 127
+            } else {
+                (-s) as u128
+            };
+            Self {
+                magnitude: mag,
+                is_negative: mag != 0,
+            }
         }
     }
 
     #[inline]
+    pub fn as_u128(&self) -> u128 {
+        self.magnitude
+    }
+
+    #[inline]
     pub fn as_i128(&self) -> i128 {
-        match *self {
-            U128OrI128::Unsigned(u) => u as i128,
-            U128OrI128::Signed(s) => s,
+        if self.is_negative && self.magnitude != 0 {
+            -(self.magnitude as i128)
+        } else {
+            self.magnitude as i128
         }
     }
 
     /// Returns true if the value is negative.
     #[inline]
     pub fn is_negative(&self) -> bool {
-        match *self {
-            U128OrI128::Unsigned(_) => false,
-            U128OrI128::Signed(s) => s < 0,
-        }
+        self.is_negative && self.magnitude != 0
     }
 
     /// Returns true if the value is nonnegative (>= 0).
@@ -150,120 +196,90 @@ impl U128OrI128 {
     }
 }
 
-impl core::cmp::PartialOrd for U64OrI64 {
+impl core::cmp::PartialOrd for U64AndSign {
     #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl core::cmp::Ord for U64OrI64 {
+impl core::cmp::Ord for U64AndSign {
     #[inline]
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        match (self, other) {
-            (U64OrI64::Unsigned(a), U64OrI64::Unsigned(b)) => a.cmp(b),
-            (U64OrI64::Signed(a), U64OrI64::Signed(b)) => a.cmp(b),
-            (U64OrI64::Unsigned(a), U64OrI64::Signed(b)) => {
-                if *b < 0 {
-                    core::cmp::Ordering::Greater
-                } else {
-                    a.cmp(&(*b as u64))
-                }
-            }
-            (U64OrI64::Signed(a), U64OrI64::Unsigned(b)) => {
-                if *a < 0 {
-                    core::cmp::Ordering::Less
-                } else {
-                    (*a as u64).cmp(b)
-                }
-            }
-        }
+        let a = self.as_i128();
+        let b = other.as_i128();
+        a.cmp(&b)
     }
 }
 
-impl core::cmp::PartialOrd for U128OrI128 {
+impl core::cmp::PartialOrd for U128AndSign {
     #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl core::cmp::Ord for U128OrI128 {
+impl core::cmp::Ord for U128AndSign {
     #[inline]
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        match (self, other) {
-            (U128OrI128::Unsigned(a), U128OrI128::Unsigned(b)) => a.cmp(b),
-            (U128OrI128::Signed(a), U128OrI128::Signed(b)) => a.cmp(b),
-            (U128OrI128::Unsigned(a), U128OrI128::Signed(b)) => {
-                if *b < 0 {
-                    core::cmp::Ordering::Greater
-                } else {
-                    a.cmp(&(*b as u128))
-                }
-            }
-            (U128OrI128::Signed(a), U128OrI128::Unsigned(b)) => {
-                if *a < 0 {
-                    core::cmp::Ordering::Less
-                } else {
-                    (*a as u128).cmp(b)
-                }
-            }
-        }
+        let a = self.as_i128();
+        let b = other.as_i128();
+        a.cmp(&b)
     }
 }
 
-impl Default for U64OrI64 {
+impl Default for U64AndSign {
     fn default() -> Self {
-        U64OrI64::Unsigned(0)
+        U64AndSign::Unsigned(0)
     }
 }
 
-impl Default for U128OrI128 {
+impl Default for U128AndSign {
     fn default() -> Self {
-        U128OrI128::Unsigned(0)
+        U128AndSign::Unsigned(0)
     }
 }
 
-impl Valid for U64OrI64 {
+impl Valid for U64AndSign {
     fn check(&self) -> Result<(), SerializationError> {
         Ok(())
     }
 }
 
-impl Valid for U128OrI128 {
+impl Valid for U128AndSign {
     fn check(&self) -> Result<(), SerializationError> {
         Ok(())
     }
 }
 
-impl CanonicalSerialize for U64OrI64 {
+impl CanonicalSerialize for U64AndSign {
     fn serialize_with_mode<W: ark_std::io::Write>(
         &self,
         mut writer: W,
         compress: Compress,
     ) -> Result<(), SerializationError> {
-        match self {
-            U64OrI64::Unsigned(u) => {
-                0u8.serialize_with_mode(&mut writer, compress)?;
-                u.serialize_with_mode(writer, compress)
-            }
-            U64OrI64::Signed(s) => {
-                1u8.serialize_with_mode(&mut writer, compress)?;
-                s.serialize_with_mode(writer, compress)
-            }
+        if self.is_negative() {
+            1u8.serialize_with_mode(&mut writer, compress)?;
+            let s = self.as_i128() as i64;
+            s.serialize_with_mode(writer, compress)
+        } else {
+            0u8.serialize_with_mode(&mut writer, compress)?;
+            let u = self.magnitude;
+            u.serialize_with_mode(writer, compress)
         }
     }
 
     fn serialized_size(&self, compress: Compress) -> usize {
         0u8.serialized_size(compress)
-            + match self {
-                U64OrI64::Unsigned(u) => u.serialized_size(compress),
-                U64OrI64::Signed(s) => s.serialized_size(compress),
+            + if self.is_negative() {
+                (self.as_i128() as i64).serialized_size(compress)
+            } else {
+                self.magnitude.serialized_size(compress)
             }
     }
 }
 
-impl CanonicalDeserialize for U64OrI64 {
+impl CanonicalDeserialize for U64AndSign {
     fn deserialize_with_mode<R: ark_std::io::Read>(
         mut reader: R,
         compress: Compress,
@@ -273,45 +289,45 @@ impl CanonicalDeserialize for U64OrI64 {
         match tag {
             0 => {
                 let u = u64::deserialize_with_mode(reader, compress, Validate::No)?;
-                Ok(U64OrI64::Unsigned(u))
+                Ok(U64AndSign::Unsigned(u))
             }
             1 => {
                 let s = i64::deserialize_with_mode(reader, compress, Validate::No)?;
-                Ok(U64OrI64::Signed(s))
+                Ok(U64AndSign::Signed(s))
             }
             _ => Err(SerializationError::InvalidData),
         }
     }
 }
 
-impl CanonicalSerialize for U128OrI128 {
+impl CanonicalSerialize for U128AndSign {
     fn serialize_with_mode<W: ark_std::io::Write>(
         &self,
         mut writer: W,
         compress: Compress,
     ) -> Result<(), SerializationError> {
-        match self {
-            U128OrI128::Unsigned(u) => {
-                0u8.serialize_with_mode(&mut writer, compress)?;
-                u.serialize_with_mode(writer, compress)
-            }
-            U128OrI128::Signed(s) => {
-                1u8.serialize_with_mode(&mut writer, compress)?;
-                s.serialize_with_mode(writer, compress)
-            }
+        if self.is_negative() {
+            1u8.serialize_with_mode(&mut writer, compress)?;
+            let s = self.as_i128();
+            s.serialize_with_mode(writer, compress)
+        } else {
+            0u8.serialize_with_mode(&mut writer, compress)?;
+            let u = self.magnitude;
+            u.serialize_with_mode(writer, compress)
         }
     }
 
     fn serialized_size(&self, compress: Compress) -> usize {
         0u8.serialized_size(compress)
-            + match self {
-                U128OrI128::Unsigned(u) => u.serialized_size(compress),
-                U128OrI128::Signed(s) => s.serialized_size(compress),
+            + if self.is_negative() {
+                self.as_i128().serialized_size(compress)
+            } else {
+                self.magnitude.serialized_size(compress)
             }
     }
 }
 
-impl CanonicalDeserialize for U128OrI128 {
+impl CanonicalDeserialize for U128AndSign {
     fn deserialize_with_mode<R: ark_std::io::Read>(
         mut reader: R,
         compress: Compress,
@@ -321,11 +337,11 @@ impl CanonicalDeserialize for U128OrI128 {
         match tag {
             0 => {
                 let u = u128::deserialize_with_mode(reader, compress, Validate::No)?;
-                Ok(U128OrI128::Unsigned(u))
+                Ok(U128AndSign::Unsigned(u))
             }
             1 => {
                 let s = i128::deserialize_with_mode(reader, compress, Validate::No)?;
-                Ok(U128OrI128::Signed(s))
+                Ok(U128AndSign::Signed(s))
             }
             _ => Err(SerializationError::InvalidData),
         }
@@ -337,7 +353,7 @@ impl CanonicalDeserialize for U128OrI128 {
 /// widening to i128 and narrowing back for both Unsigned and Signed variants
 /// under XLEN views 8, 32, and 64.
 mod tests {
-    use super::U64OrI64 as RIV;
+    use super::U64AndSign as RIV;
     use rand::Rng;
 
     fn check_equivalence(v: RIV) {
