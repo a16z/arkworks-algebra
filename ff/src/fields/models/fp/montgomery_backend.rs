@@ -1013,7 +1013,7 @@ impl<T: MontConfig<N>, const N: usize> Fp<MontBackend<T, N>, N> {
     }
 
     #[inline]
-    pub const fn mul_two_u128s(&self, a:u128, b:u128)->Self{
+    pub const fn mul_two_u128s(&self, _a: u128, _b: u128) -> Self {
         todo!()
     }
 
@@ -1021,17 +1021,17 @@ impl<T: MontConfig<N>, const N: usize> Fp<MontBackend<T, N>, N> {
     /// and whose highest two limbs are provided by `hi` (low 64 bits map to limb N-2,
     /// high 64 bits map to limb N-1). This is equivalent to K=2 non-zero high limbs.
     #[inline]
-    pub const fn mul_assign_hi_u128(&mut self, hi: u128) {
+    pub const fn mul_assign_hi_u128(&mut self, big_int_repre: [u64; 4]) {
         // Construct a synthetic RHS by using the const CIOS with K=2, passing limbs directly.
         // Leverage existing const CIOS specialized by K via a tiny adapter.
-        *self = self.const_cios_mul_rhs_hi2(hi as u64, (hi >> 64) as u64);
+        *self = self.const_cios_mul_rhs_hi2(big_int_repre[2], big_int_repre[3]);
     }
- 
+
     /// Returns self * rhs_high_limbs, where RHS is zero in low N-2 limbs and has its top two
     /// limbs provided by `hi` (low 64 -> limb N-2, high 64 -> limb N-1). Equivalent to K=2.
     #[inline]
-    pub const fn mul_hi_u128(self, hi: u128) -> Self {
-        self.const_cios_mul_rhs_hi2(hi as u64, (hi >> 64) as u64)
+    pub const fn mul_hi_u128(self, big_int_repre: [u64; 4]) -> Self {
+        self.const_cios_mul_rhs_hi2(big_int_repre[2], big_int_repre[3])
     }
 
     /// Const-capable CIOS fastpath specialized for exactly two high limbs (K=2), passed
@@ -1137,7 +1137,10 @@ impl<T: MontConfig<N>, const N: usize> Fp<MontBackend<T, N>, N> {
     /// Two-phase (schoolbook+REDC) multiply with a RHS whose highest K limbs are provided
     /// in `rhs_hi` and lower limbs are zero.
     #[inline]
-    const fn mul_without_cond_subtract_rhs_hi<const K: usize>(mut self, rhs_hi: &crate::BigInt<K>) -> (bool, Self) {
+    const fn mul_without_cond_subtract_rhs_hi<const K: usize>(
+        mut self,
+        rhs_hi: &crate::BigInt<K>,
+    ) -> (bool, Self) {
         let (mut lo, mut hi) = ([0u64; N], [0u64; N]);
         // Schoolbook: only columns j in [N-K, N)
         crate::const_for!((i in 0..N) {
