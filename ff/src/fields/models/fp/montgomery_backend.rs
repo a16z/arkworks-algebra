@@ -1034,6 +1034,14 @@ impl<T: MontConfig<N>, const N: usize> Fp<MontBackend<T, N>, N> {
         self.const_cios_mul_rhs_hi2(big_int_repre[2], big_int_repre[3])
     }
 
+    ///// Returns self * rhs_high_limbs, where RHS is zero in low N-2 limbs and has its top two
+    ///// limbs provided by `hi` (low 64 -> limb N-2, high 64 -> limb N-1). Equivalent to K=2.
+    ///// This is really the same as the above but we don't always do shifts per multiplication.
+    //#[inline]
+    //pub const fn mul_hi_u128_no_shifts(self, hi: u64, lo: u64) -> Self {
+    //    self.const_cios_mul_rhs_hi2(lo, hi)
+    //}
+    //
     /// Const-capable CIOS fastpath specialized for exactly two high limbs (K=2), passed
     /// directly as u64s instead of via an Fp operand. Assumes all lower limbs are zero.
     #[inline]
