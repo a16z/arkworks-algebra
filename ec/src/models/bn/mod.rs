@@ -64,7 +64,19 @@ pub trait BnConfig: 'static + Sized {
             })
             .collect::<Vec<_>>();
 
-        let mut f = cfg_chunks_mut!(pairs, 4)
+        // Dynamically choose chunk size based on available parallelism
+        #[cfg(feature = "parallel")]
+        let chunk_size = if pairs.len() > 4 {
+            let num_threads = rayon::current_num_threads();
+            // Ensure at least one pair per thread, but no smaller than 4 for efficiency
+            (((pairs.len() + num_threads - 1) / num_threads).max(4))
+        } else {
+            pairs.len()
+        };
+        #[cfg(not(feature = "parallel"))]
+        let chunk_size = 4;
+
+        let mut f = cfg_chunks_mut!(pairs, chunk_size)
             .map(|pairs| {
                 let mut f = <Bn<Self> as Pairing>::TargetField::one();
                 for i in (1..Self::ATE_LOOP_COUNT.len()).rev() {

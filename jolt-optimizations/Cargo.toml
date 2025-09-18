@@ -28,7 +28,7 @@ rayon.workspace = true
 criterion.workspace = true
 
 [features]
-default = []
+default = ["parallel"]
 std = ["ark-std/std", "ark-ff/std", "ark-ec/std", "ark-serialize/std"]
 parallel = ["std", "ark-std/parallel", "ark-ff/parallel", "ark-ec/parallel", "ark-serialize/parallel"]
 
@@ -54,6 +54,10 @@ harness = false
 
 [[bench]]
 name = "batch_addition"
+harness = false
+
+[[bench]]
+name = "multi_pairing"
 harness = false
 
 [[example]]

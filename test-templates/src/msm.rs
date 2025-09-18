@@ -81,31 +81,31 @@ pub fn test_var_base_msm_specialized<G: VariableBaseMSM>() {
     let v = (0..SAMPLES).map(|_| bool::rand(rng)).collect::<Vec<_>>();
     let v_fe = v.iter().map(|&b| F::<G>::from(b)).collect::<Vec<_>>();
     let naive = naive_var_base_msm::<G>(g.as_slice(), v_fe.as_slice());
-    let fast = G::msm_u1(g.as_slice(), v.as_slice());
+    let fast = G::msm_u1(g.as_slice(), v.as_slice(), false);
     assert_eq!(naive, fast);
 
     let v = (0..SAMPLES).map(|_| u8::rand(rng)).collect::<Vec<_>>();
     let v_fe = v.iter().map(|&b| F::<G>::from(b)).collect::<Vec<_>>();
     let naive = naive_var_base_msm::<G>(g.as_slice(), v_fe.as_slice());
-    let fast = G::msm_u8(g.as_slice(), v.as_slice());
+    let fast = G::msm_u8(g.as_slice(), v.as_slice(), false);
     assert_eq!(naive, fast);
 
     let v = (0..SAMPLES).map(|_| u16::rand(rng)).collect::<Vec<_>>();
     let v_fe = v.iter().map(|&b| F::<G>::from(b)).collect::<Vec<_>>();
     let naive = naive_var_base_msm::<G>(g.as_slice(), v_fe.as_slice());
-    let fast = G::msm_u16(g.as_slice(), v.as_slice());
+    let fast = G::msm_u16(g.as_slice(), v.as_slice(), false);
     assert_eq!(naive, fast);
 
     let v = (0..SAMPLES).map(|_| u32::rand(rng)).collect::<Vec<_>>();
     let v_fe = v.iter().map(|&b| F::<G>::from(b)).collect::<Vec<_>>();
     let naive = naive_var_base_msm::<G>(g.as_slice(), v_fe.as_slice());
-    let fast = G::msm_u32(g.as_slice(), v.as_slice());
+    let fast = G::msm_u32(g.as_slice(), v.as_slice(), false);
     assert_eq!(naive, fast);
 
     let v = (0..SAMPLES).map(|_| u64::rand(rng)).collect::<Vec<_>>();
     let v_fe = v.iter().map(|&b| F::<G>::from(b)).collect::<Vec<_>>();
     let naive = naive_var_base_msm::<G>(g.as_slice(), v_fe.as_slice());
-    let fast = G::msm_u64(g.as_slice(), v.as_slice());
+    let fast = G::msm_u64(g.as_slice(), v.as_slice(), false);
     assert_eq!(naive, fast);
 }
 
