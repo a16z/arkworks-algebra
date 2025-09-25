@@ -2,7 +2,6 @@ use crate::{
     AdditiveGroup, BigInt, BigInteger, FftField, Field, LegendreSymbol, One, PrimeField,
     SqrtPrecomputation, Zero,
 };
-#[cfg(feature = "allocative")]
 use allocative::Allocative;
 use ark_serialize::{
     CanonicalDeserialize, CanonicalDeserializeWithFlags, CanonicalSerialize,
@@ -126,7 +125,6 @@ pub struct Fp<P: FpConfig<N>, const N: usize>(
     #[doc(hidden)] pub PhantomData<P>,
 );
 
-#[cfg(feature = "allocative")]
 impl<P: FpConfig<N>, const N: usize> Allocative for Fp<P, N> {
     fn visit<'a, 'b: 'a>(&self, _visitor: &'a mut allocative::Visitor<'b>) {}
 }

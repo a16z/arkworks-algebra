@@ -102,8 +102,14 @@ pub trait Pairing: Sized + 'static + Copy + Debug + Sync + Send + Eq {
         a: impl IntoIterator<Item = impl AsRef<Self::G1Prepared>>,
         b: impl IntoIterator<Item = impl AsRef<Self::G2Prepared>>,
     ) -> MillerLoopOutput<Self> {
-        let a_cloned = a.into_iter().map(|x| x.as_ref().clone()).collect::<Vec<_>>();
-        let b_cloned = b.into_iter().map(|x| x.as_ref().clone()).collect::<Vec<_>>();
+        let a_cloned = a
+            .into_iter()
+            .map(|x| x.as_ref().clone())
+            .collect::<Vec<_>>();
+        let b_cloned = b
+            .into_iter()
+            .map(|x| x.as_ref().clone())
+            .collect::<Vec<_>>();
         Self::multi_miller_loop(a_cloned, b_cloned)
     }
 

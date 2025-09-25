@@ -1,4 +1,5 @@
 use ark_ff::prelude::*;
+use ark_ff::biginteger::{S128, S64};
 use ark_std::{
     borrow::Borrow,
     cfg_chunks, cfg_into_iter, cfg_iter,
@@ -599,6 +600,102 @@ pub fn msm_i128<V: VariableBaseMSM>(
                 Either::Left(absolute_val as u64)
             } else {
                 Either::Right(absolute_val as u64)
+            }
+        });
+    if serial {
+        return msm_serial::<V, _>(&non_negative_bases, &non_negative_scalars)
+            - msm_serial::<V, _>(&negative_bases, &negative_scalars);
+    } else {
+        let chunk_size = match preamble(&mut bases, &mut scalars, serial) {
+            Some(chunk_size) => chunk_size,
+            None => return V::zero(),
+        };
+
+        let non_negative_msm: V = cfg_chunks!(non_negative_bases, chunk_size)
+            .zip(cfg_chunks!(non_negative_scalars, chunk_size))
+            .map(|(non_negative_bases, non_negative_scalars)| {
+                msm_serial::<V, _>(non_negative_bases, non_negative_scalars)
+            })
+            .sum();
+        let negative_msm: V = cfg_chunks!(negative_bases, chunk_size)
+            .zip(cfg_chunks!(negative_scalars, chunk_size))
+            .map(|(negative_bases, negative_scalars)| {
+                msm_serial::<V, _>(negative_bases, negative_scalars)
+            })
+            .sum();
+        non_negative_msm - negative_msm
+    }
+}
+
+pub fn msm_s64<V: VariableBaseMSM>(
+    mut bases: &[V::MulBase],
+    mut scalars: &[S64],
+    serial: bool,
+) -> V {
+    let (negative_bases, non_negative_bases): (Vec<V::MulBase>, Vec<V::MulBase>) =
+        bases.iter().enumerate().partition_map(|(i, b)| {
+            if !scalars[i].sign() {
+                Either::Left(b)
+            } else {
+                Either::Right(b)
+            }
+        });
+    let (negative_scalars, non_negative_scalars): (Vec<u64>, Vec<u64>) = scalars
+        .iter()
+        .partition_map(|s| {
+            let mag = s.magnitude_as_u64();
+            if !s.sign() {
+                Either::Left(mag)
+            } else {
+                Either::Right(mag)
+            }
+        });
+    if serial {
+        return msm_serial::<V, _>(&non_negative_bases, &non_negative_scalars)
+            - msm_serial::<V, _>(&negative_bases, &negative_scalars);
+    } else {
+        let chunk_size = match preamble(&mut bases, &mut scalars, serial) {
+            Some(chunk_size) => chunk_size,
+            None => return V::zero(),
+        };
+
+        let non_negative_msm: V = cfg_chunks!(non_negative_bases, chunk_size)
+            .zip(cfg_chunks!(non_negative_scalars, chunk_size))
+            .map(|(non_negative_bases, non_negative_scalars)| {
+                msm_serial::<V, _>(non_negative_bases, non_negative_scalars)
+            })
+            .sum();
+        let negative_msm: V = cfg_chunks!(negative_bases, chunk_size)
+            .zip(cfg_chunks!(negative_scalars, chunk_size))
+            .map(|(negative_bases, negative_scalars)| {
+                msm_serial::<V, _>(negative_bases, negative_scalars)
+            })
+            .sum();
+        non_negative_msm - negative_msm
+    }
+}
+
+pub fn msm_s128<V: VariableBaseMSM>(
+    mut bases: &[V::MulBase],
+    mut scalars: &[S128],
+    serial: bool,
+) -> V {
+    let (negative_bases, non_negative_bases): (Vec<V::MulBase>, Vec<V::MulBase>) =
+        bases.iter().enumerate().partition_map(|(i, b)| {
+            if !scalars[i].sign() {
+                Either::Left(b)
+            } else {
+                Either::Right(b)
+            }
+        });
+    let (negative_scalars, non_negative_scalars): (Vec<u128>, Vec<u128>) = scalars
+        .iter()
+        .partition_map(|s| {
+            let mag = s.magnitude_as_u128();
+            if !s.sign() {
+                Either::Left(mag)
+            } else {
+                Either::Right(mag)
             }
         });
     if serial {

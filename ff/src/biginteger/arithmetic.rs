@@ -135,7 +135,9 @@ pub fn add_limbs_shifted_inplace<const N: usize>(
     let mut i = 0usize;
     while i < limbs.len() {
         let idx = lane_offset + i;
-        if idx >= N { break; }
+        if idx >= N {
+            break;
+        }
         let tmp = (acc[idx] as u128) + (limbs[i] as u128) + (carry as u128);
         acc[idx] = tmp as u64;
         carry = (tmp >> 64) as u64;

@@ -88,3 +88,8 @@ harness = false
 name = "bn254"
 path = "benches/bn254.rs"
 harness = false
+
+[[bench]]
+name = "bigint"
+path = "benches/bigint.rs"
+harness = false
