@@ -123,6 +123,35 @@ pub fn mac_discard(a: u64, b: u64, c: u64, carry: &mut u64) {
     *carry = (tmp >> 64) as u64;
 }
 
+/// Accumulate `limbs` into an N-limb accumulator starting at `lane_offset` (64-bit lanes),
+/// returning the final carry. This is a helper for building wide accumulators.
+#[inline(always)]
+pub fn add_limbs_shifted_inplace<const N: usize>(
+    acc: &mut [u64; N],
+    limbs: &[u64],
+    lane_offset: usize,
+) -> u64 {
+    let mut carry = 0u64;
+    let mut i = 0usize;
+    while i < limbs.len() {
+        let idx = lane_offset + i;
+        if idx >= N { break; }
+        let tmp = (acc[idx] as u128) + (limbs[i] as u128) + (carry as u128);
+        acc[idx] = tmp as u64;
+        carry = (tmp >> 64) as u64;
+        i += 1;
+    }
+    // propagate carry across remaining lanes if any
+    let mut idx = lane_offset + i;
+    while carry != 0 && idx < N {
+        let tmp = (acc[idx] as u128) + (carry as u128);
+        acc[idx] = tmp as u64;
+        carry = (tmp >> 64) as u64;
+        idx += 1;
+    }
+    carry
+}
+
 macro_rules! mac_with_carry {
     ($a:expr, $b:expr, $c:expr, &mut $carry:expr$(,)?) => {{
         let tmp =

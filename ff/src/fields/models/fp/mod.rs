@@ -111,7 +111,7 @@ pub trait FpConfig<const N: usize>: Send + Sync + 'static + Sized {
 
     /// Creates a field element from a `u64`.
     /// Returns `None` if the `u64` is larger than or equal to the modulus.
-    fn from_u64(val: u64) -> Option<Fp<Self, N>>;
+    fn from_u64<const NPLUS1: usize>(val: u64) -> Option<Fp<Self, N>>;
 }
 
 /// Represents an element of the prime field F_p, where `p == P::MODULUS`.
@@ -385,8 +385,8 @@ impl<P: FpConfig<N>, const N: usize> PrimeField for Fp<P, N> {
     }
 
     #[inline]
-    fn from_u64(r: u64) -> Option<Self> {
-        P::from_u64(r)
+    fn from_u64<const NPLUS1: usize>(r: u64) -> Option<Self> {
+        P::from_u64::<NPLUS1>(r)
     }
 }
 

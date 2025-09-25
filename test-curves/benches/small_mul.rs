@@ -1,10 +1,16 @@
-use ark_ff::UniformRand;
+// This bench prefers bn254; if not enabled, provide a no-op main
+#[cfg(feature = "bn254")]
+use ark_ff::{UniformRand, BigInteger};
+#[cfg(feature = "bn254")]
 use ark_std::rand::{rngs::StdRng, Rng, SeedableRng};
-use ark_test_curves::bn254::{Fr, FrConfig};
+#[cfg(feature = "bn254")]
+use ark_test_curves::bn254::Fr;
+#[cfg(feature = "bn254")]
 use criterion::{criterion_group, criterion_main, Criterion};
 
 // Hack: copy over the helper functions from the Montgomery backend to be benched
 
+#[cfg(feature = "bn254")]
 fn mul_small_bench(c: &mut Criterion) {
     const SAMPLES: usize = 1000;
     // Use a fixed seed for reproducibility
@@ -13,7 +19,7 @@ fn mul_small_bench(c: &mut Criterion) {
     let a_s = (0..SAMPLES)
         .map(|_| Fr::rand(&mut rng))
         .collect::<Vec<_>>();
-    let a_limbs_s = a_s.iter().map(|a| a.0.0).collect::<Vec<_>>();
+    // let a_limbs_s = a_s.iter().map(|a| a.0.0).collect::<Vec<_>>();
 
     let b_u64_s = (0..SAMPLES)
         .map(|_| rng.gen::<u64>())
@@ -40,41 +46,88 @@ fn mul_small_bench(c: &mut Criterion) {
         .map(|_| Fr::rand(&mut rng))
         .collect::<Vec<_>>();
 
+    // Generate test data for reduction benchmarks
+    use ark_ff::BigInt;
+    // Extract BigInt<4> from Fr elements for mul_u64_w_carry benchmark
+    let a_bigints = a_s.iter().map(|a| a.0).collect::<Vec<_>>();
+    
+    // For Montgomery reduction: 2N-limb inputs (N=4 for bn254, so 2N=8)
+    let bigint_2n_s = (0..SAMPLES)
+        .map(|_| BigInt::<8>([
+            rng.gen::<u64>(), rng.gen::<u64>(), rng.gen::<u64>(), rng.gen::<u64>(),
+            rng.gen::<u64>(), rng.gen::<u64>(), rng.gen::<u64>(), rng.gen::<u64>(),
+        ]))
+        .collect::<Vec<_>>();
+    
+    // For Barrett reductions: N+1, N+2, N+3 limb inputs
+    let bigint_nplus1_s = (0..SAMPLES)
+        .map(|_| BigInt::<5>([
+            rng.gen::<u64>(), rng.gen::<u64>(), rng.gen::<u64>(), rng.gen::<u64>(), rng.gen::<u64>(),
+        ]))
+        .collect::<Vec<_>>();
+    
+    let bigint_nplus2_s = (0..SAMPLES)
+        .map(|_| BigInt::<6>([
+            rng.gen::<u64>(), rng.gen::<u64>(), rng.gen::<u64>(), 
+            rng.gen::<u64>(), rng.gen::<u64>(), rng.gen::<u64>(),
+        ]))
+        .collect::<Vec<_>>();
+    
+    let bigint_nplus3_s = (0..SAMPLES)
+        .map(|_| BigInt::<7>([
+            rng.gen::<u64>(), rng.gen::<u64>(), rng.gen::<u64>(), rng.gen::<u64>(),
+            rng.gen::<u64>(), rng.gen::<u64>(), rng.gen::<u64>(),
+        ]))
+        .collect::<Vec<_>>();
+
     let mut group = c.benchmark_group("Fr Arithmetic Comparison");
 
+    // Uncommented to compare with mul_u64_w_carry + Barrett reduction
     group.bench_function("mul_u64", |bench| {
         let mut i = 0;
         bench.iter(|| {
             i = (i + 1) % SAMPLES;
-            criterion::black_box(a_s[i].mul_u64(b_u64_s[i]))
+            // bn254 Fr has N=4 limbs => N+1 = 5
+            criterion::black_box(a_s[i].mul_u64::<5>(b_u64_s[i]))
         })
     });
 
-    group.bench_function("mul_i64", |bench| {
+    // Benchmark just the multiplication phase (without Barrett reduction)
+    group.bench_function("mul_u64_w_carry (multiplication only)", |bench| {
         let mut i = 0;
         bench.iter(|| {
             i = (i + 1) % SAMPLES;
-            criterion::black_box(a_s[i].mul_i64(b_i64_s[i]))
+            // This is just the multiplication step, returns BigInt<5>
+            criterion::black_box(a_bigints[i].mul_u64_w_carry::<5>(b_u64_s[i]))
         })
     });
 
-    // Note: results might be worse than in real applications due to branch prediction being wrong
-    // 50% of the time
-    group.bench_function("mul_u128", |bench| {
-        let mut i = 0;
-        bench.iter(|| {
-            i = (i + 1) % SAMPLES;
-            criterion::black_box(a_s[i].mul_u128(b_u128_s[i]))
-        })
-    });
+    // group.bench_function("mul_i64", |bench| {
+    //     let mut i = 0;
+    //     bench.iter(|| {
+    //         i = (i + 1) % SAMPLES;
+    //         criterion::black_box(a_s[i].mul_i64::<5>(b_i64_s[i]))
+    //     })
+    // });
 
-    group.bench_function("mul_i128", |bench| {
-        let mut i = 0;
-        bench.iter(|| {
-            i = (i + 1) % SAMPLES;
-            criterion::black_box(a_s[i].mul_i128(b_i128_s[i]))
-        })
-    });
+    // // Note: results might be worse than in real applications due to branch prediction being wrong
+    // // 50% of the time
+    // group.bench_function("mul_u128", |bench| {
+    //     let mut i = 0;
+    //     bench.iter(|| {
+    //         i = (i + 1) % SAMPLES;
+    //         // bn254 Fr has N=4 limbs => N+1 = 5, N+2 = 6
+    //         criterion::black_box(a_s[i].mul_u128::<5, 6>(b_u128_s[i]))
+    //     })
+    // });
+
+    // group.bench_function("mul_i128", |bench| {
+    //     let mut i = 0;
+    //     bench.iter(|| {
+    //         i = (i + 1) % SAMPLES;
+    //         criterion::black_box(a_s[i].mul_i128::<5, 6>(b_i128_s[i]))
+    //     })
+    // });
 
     group.bench_function("standard mul (Fr * Fr)", |bench| {
         let mut i = 0;
@@ -84,27 +137,71 @@ fn mul_small_bench(c: &mut Criterion) {
         })
     });
 
-    // Benchmark mul_u128 specifically with inputs known to fit in u64
-    group.bench_function("mul_u128 (u64 inputs)", |bench| {
-        let mut i = 0;
-        bench.iter(|| {
-            i = (i + 1) % SAMPLES;
-            // Call mul_u128 but provide a u64 input cast to u128
-            criterion::black_box(a_s[i].mul_u128(b_u64_as_u128_s[i]))
-        })
-    });
+    // Bench specialized high-limb RHS fastpaths (K = 1, 2)
+    // Construct BigInt<K> with random high limbs for K=1 and K=2
+    let b_k1_bigint = (0..SAMPLES)
+        .map(|_| BigInt::<1>([rng.gen::<u64>()]))
+        .collect::<Vec<_>>();
+    let b_k2_bigint = (0..SAMPLES)
+        .map(|_| BigInt::<2>([rng.gen::<u64>(), rng.gen::<u64>()]))
+        .collect::<Vec<_>>();
+
+    // group.bench_function("mul_assign_hi_bigint::<1>", |bench| {
+    //     let mut i = 0;
+    //     bench.iter(|| {
+    //         i = (i + 1) % SAMPLES;
+    //         let mut x = a_s[i];
+    //         x.mul_assign_hi_bigint::<1>(&b_k1_bigint[i]);
+    //         criterion::black_box(x)
+    //     })
+    // });
+
+    // group.bench_function("mul_assign_hi_bigint::<2>", |bench| {
+    //     let mut i = 0;
+    //     bench.iter(|| {
+    //         i = (i + 1) % SAMPLES;
+    //         let mut x = a_s[i];
+    //         x.mul_assign_hi_bigint::<2>(&b_k2_bigint[i]);
+    //         criterion::black_box(x)
+    //     })
+    // });
+
+    // group.bench_function("mul_hi_bigint::<1>", |bench| {
+    //     let mut i = 0;
+    //     bench.iter(|| {
+    //         i = (i + 1) % SAMPLES;
+    //         criterion::black_box(a_s[i].mul_hi_bigint::<1>(&b_k1_bigint[i]))
+    //     })
+    // });
+
+    // group.bench_function("mul_hi_bigint::<2>", |bench| {
+    //     let mut i = 0;
+    //     bench.iter(|| {
+    //         i = (i + 1) % SAMPLES;
+    //         criterion::black_box(a_s[i].mul_hi_bigint::<2>(&b_k2_bigint[i]))
+    //     })
+    // });
+
+    // group.bench_function("mul_u128 (u64 inputs)", |bench| {
+    //     let mut i = 0;
+    //     bench.iter(|| {
+    //         i = (i + 1) % SAMPLES;
+    //         // Call mul_u128 but provide a u64 input cast to u128
+    //         criterion::black_box(a_s[i].mul_u128::<5, 6>(b_u64_as_u128_s[i]))
+    //     })
+    // });
 
     // Benchmark the auxiliary function directly (assuming it's made public)
     // Note: Requires mul_u128_aux to be pub in montgomery_backend.rs
     // Need to import it if not already done via wildcard/specific import
     // Let's assume it's accessible via a_s[i].mul_u128_aux(...) for now
-    group.bench_function("mul_u128_aux (u128 inputs)", |bench| {
-        let mut i = 0;
-        bench.iter(|| {
-            i = (i + 1) % SAMPLES;
-            criterion::black_box(a_s[i].mul_u128_aux(b_u128_s[i]))
-        })
-    });
+    // group.bench_function("mul_u128_aux (u128 inputs)", |bench| {
+    //     let mut i = 0;
+    //     bench.iter(|| {
+    //         i = (i + 1) % SAMPLES;
+    //         criterion::black_box(a_s[i].mul_u128_aux::<5, 6>(b_u128_s[i]))
+    //     })
+    // });
 
     group.bench_function("Addition (Fr + Fr)", |bench| {
         let mut i = 0;
@@ -114,8 +211,127 @@ fn mul_small_bench(c: &mut Criterion) {
         })
     });
 
+    // Reduction benchmarks
+    group.bench_function("montgomery_reduce_2n", |bench| {
+        let mut i = 0;
+        bench.iter(|| {
+            i = (i + 1) % SAMPLES;
+            criterion::black_box(Fr::montgomery_reduce_2n::<8>(bigint_2n_s[i]))
+        })
+    });
+
+    // group.bench_function("from_unchecked_nplus1 (Barrett N+1)", |bench| {
+    //     let mut i = 0;
+    //     bench.iter(|| {
+    //         i = (i + 1) % SAMPLES;
+    //         criterion::black_box(Fr::from_unchecked_nplus1::<5>(bigint_nplus1_s[i]))
+    //     })
+    // });
+
+    // group.bench_function("from_unchecked_nplus2 (Barrett N+2)", |bench| {
+    //     let mut i = 0;
+    //     bench.iter(|| {
+    //         i = (i + 1) % SAMPLES;
+    //         criterion::black_box(Fr::from_unchecked_nplus2::<5, 6>(bigint_nplus2_s[i]))
+    //     })
+    // });
+
+    // group.bench_function("from_unchecked_nplus3 (Barrett N+3)", |bench| {
+    //     let mut i = 0;
+    //     bench.iter(|| {
+    //         i = (i + 1) % SAMPLES;
+    //         criterion::black_box(Fr::from_unchecked_nplus3::<5, 6, 7>(bigint_nplus3_s[i]))
+    //     })
+    // });
+
+    // Linear combination benchmarks
+    group.bench_function("linear_combination_u64 (2 terms)", |bench| {
+        let mut i = 0;
+        bench.iter(|| {
+            i = (i + 1) % SAMPLES;
+            let pairs = [(a_s[i], b_u64_s[i]), (c_s[i], b_u64_s[(i + 1) % SAMPLES])];
+            criterion::black_box(Fr::linear_combination_u64::<5>(&pairs))
+        })
+    });
+
+    group.bench_function("linear_combination_u64_2 (optimized)", |bench| {
+        let mut i = 0;
+        bench.iter(|| {
+            i = (i + 1) % SAMPLES;
+            criterion::black_box(Fr::linear_combination_u64_2::<5>(
+                &a_s[i], b_u64_s[i],
+                &c_s[i], b_u64_s[(i + 1) % SAMPLES]
+            ))
+        })
+    });
+
+    group.bench_function("linear_combination_u64 (4 terms)", |bench| {
+        let mut i = 0;
+        bench.iter(|| {
+            i = (i + 1) % SAMPLES;
+            let pairs = [
+                (a_s[i], b_u64_s[i]), 
+                (c_s[i], b_u64_s[(i + 1) % SAMPLES]),
+                (a_s[(i + 2) % SAMPLES], b_u64_s[(i + 2) % SAMPLES]),
+                (c_s[(i + 3) % SAMPLES], b_u64_s[(i + 3) % SAMPLES]),
+            ];
+            criterion::black_box(Fr::linear_combination_u64::<5>(&pairs))
+        })
+    });
+
+    group.bench_function("linear_combination_u64_3 (optimized)", |bench| {
+        let mut i = 0;
+        bench.iter(|| {
+            i = (i + 1) % SAMPLES;
+            criterion::black_box(Fr::linear_combination_u64_3::<5>(
+                &a_s[i], b_u64_s[i],
+                &c_s[i], b_u64_s[(i + 1) % SAMPLES],
+                &a_s[(i + 2) % SAMPLES], b_u64_s[(i + 2) % SAMPLES]
+            ))
+        })
+    });
+
+    group.bench_function("linear_combination_i64 (2+2 terms)", |bench| {
+        let mut i = 0;
+        bench.iter(|| {
+            i = (i + 1) % SAMPLES;
+            let pos = [(a_s[i], b_u64_s[i]), (c_s[i], b_u64_s[(i + 1) % SAMPLES])];
+            let neg = [(a_s[(i + 2) % SAMPLES], b_u64_s[(i + 2) % SAMPLES]), 
+                      (c_s[(i + 3) % SAMPLES], b_u64_s[(i + 3) % SAMPLES])];
+            criterion::black_box(Fr::linear_combination_i64::<5>(&pos, &neg))
+        })
+    });
+
+    // Comparison: naive approach vs linear combination (using mul_u64 for fair comparison)
+    group.bench_function("naive 2-term combination", |bench| {
+        let mut i = 0;
+        bench.iter(|| {
+            i = (i + 1) % SAMPLES;
+            let term1 = a_s[i].mul_u64::<5>(b_u64_s[i]);
+            let term2 = c_s[i].mul_u64::<5>(b_u64_s[(i + 1) % SAMPLES]);
+            criterion::black_box(term1 + term2)
+        })
+    });
+
+    group.bench_function("naive 4-term combination", |bench| {
+        let mut i = 0;
+        bench.iter(|| {
+            i = (i + 1) % SAMPLES;
+            let term1 = a_s[i].mul_u64::<5>(b_u64_s[i]);
+            let term2 = c_s[i].mul_u64::<5>(b_u64_s[(i + 1) % SAMPLES]);
+            let term3 = a_s[(i + 2) % SAMPLES].mul_u64::<5>(b_u64_s[(i + 2) % SAMPLES]);
+            let term4 = c_s[(i + 3) % SAMPLES].mul_u64::<5>(b_u64_s[(i + 3) % SAMPLES]);
+            criterion::black_box(term1 + term2 + term3 + term4)
+        })
+    });
+
     group.finish();
 }
 
+#[cfg(feature = "bn254")]
 criterion_group!(benches, mul_small_bench);
-criterion_main!(benches); 
+#[cfg(feature = "bn254")]
+criterion_main!(benches);
+
+#[cfg(not(feature = "bn254"))]
+fn main() {}

@@ -29,6 +29,9 @@ use zeroize::Zeroize;
 #[macro_use]
 pub mod arithmetic;
 
+pub mod signed;
+pub use signed::SignedBigInt;
+
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Zeroize)]
 pub struct BigInt<const N: usize>(pub [u64; N]);
 
@@ -285,17 +288,45 @@ impl<const N: usize> BigInt<N> {
     /// leading zeros in the most significant limb.
     #[doc(hidden)]
     pub const fn num_spare_bits(self) -> u32 {
-        // Count the leading zeros in the most significant limb
-        let msb = self.0[N - 1];
-        let mut count = 0;
-        let mut mask = 1u64 << 63; // Start with the highest bit
+        // Fast path: directly use the intrinsic on the most significant limb
+        self.0[N - 1].leading_zeros()
+    }
 
-        while count < 64 && (msb & mask) == 0 {
-            count += 1;
-            mask >>= 1;
+    /// Truncated-width multiplication: compute self * other and fit into P limbs; overflow is ignored.
+    #[inline]
+    pub fn mul_trunc<const M: usize, const P: usize>(&self, other: &BigInt<M>) -> BigInt<P> {
+        let mut res = BigInt::<P>::zero();
+        let i_limit = core::cmp::min(N, P);
+        for i in 0..i_limit {
+            let mut carry = 0u64;
+            let j_limit = core::cmp::min(M, P - i);
+            for j in 0..j_limit {
+                res.0[i + j] = mac_with_carry!(res.0[i + j], self.0[i], other.0[j], &mut carry);
+            }
+            if i + j_limit < P {
+                let (new_val, _of) = res.0[i + j_limit].overflowing_add(carry);
+                res.0[i + j_limit] = new_val;
+            }
         }
+        res
+    }
 
-        count
+    /// Fused multiply-add with truncation: acc += self * other, fitting into P limbs; overflow is ignored.
+    /// This is a generic version for arbitrary limb widths of `self` and `other`.
+    #[inline]
+    pub fn fmadd_trunc<const M: usize, const P: usize>(&self, other: &BigInt<M>, acc: &mut BigInt<P>) {
+        let i_limit = core::cmp::min(N, P);
+        for i in 0..i_limit {
+            let mut carry = 0u64;
+            let j_limit = core::cmp::min(M, P - i);
+            for j in 0..j_limit {
+                acc.0[i + j] = mac_with_carry!(acc.0[i + j], self.0[i], other.0[j], &mut carry);
+            }
+            if i + j_limit < P {
+                let (new_val, _of) = acc.0[i + j_limit].overflowing_add(carry);
+                acc.0[i + j_limit] = new_val;
+            }
+        }
     }
 
     #[inline]
@@ -441,6 +472,371 @@ impl<const N: usize> BigInteger for BigInt<N> {
                 t = t2;
             }
         }
+    }
+
+    #[inline]
+    #[unroll_for_loops(8)]
+    fn mul_u64_in_place(&mut self, other: u64) {
+        // special cases for 0 and 1
+        // if other == 0 || self.is_zero() {
+        //     *self = Self::zero();
+        //     return;
+        // } else if other == 1 {
+        //     return;
+        // }
+        // Use the same low-level multiply-accumulate primitive that already
+        // benefits from x86 optimizations in this crate.
+        let mut carry = 0u64;
+        for i in 0..N {
+            self.0[i] = mac_with_carry!(0u64, self.0[i], other, &mut carry);
+        }
+        // Overflow is ignored by contract; assert in debug to catch misuse.
+        debug_assert!(carry == 0, "Overflow in BigInt::mul_u64_in_place");
+    }
+
+    #[inline]
+    #[unroll_for_loops(8)]
+    fn mul_u64_w_carry<const NPLUS1: usize>(&self, other: u64) -> BigInt<NPLUS1> {
+        // ensure NPLUS1 is the correct size
+        debug_assert!(NPLUS1 == N + 1);
+        // special cases for 0 and 1
+        // if other == 0 || self.is_zero() {
+        //     return BigInt::<NPLUS1>::zero();
+        // } else if other == 1 {
+        //     let mut res = BigInt::<NPLUS1>::zero();
+        //     for i in 0..N {
+        //         res.0[i] = self.0[i];
+        //     }
+        //     return res;
+        // }
+        // Use the same multiply-accumulate primitive and capture the final carry
+        let mut res = BigInt::<NPLUS1>::zero();
+        let mut carry = 0u64;
+        for i in 0..N {
+            res.0[i] = mac_with_carry!(0u64, self.0[i], other, &mut carry);
+        }
+        res.0[N] = carry;
+        res
+    }
+
+    #[inline]
+    #[unroll_for_loops(8)]
+    fn fmu64a<const NPLUS1: usize>(&self, other: u64, acc: &mut BigInt<NPLUS1>) {
+        // ensure NPLUS1 is the correct size
+        debug_assert!(NPLUS1 == N + 1);
+        // special cases for 0 and 1
+        if other == 0 || self.is_zero() {
+            // idempotent
+            return;
+        } else if other == 1 {
+            // just addition
+            let mut carry = 0;
+            for i in 0..N {
+                carry = arithmetic::adc_for_add_with_carry(&mut acc.0[i], self.0[i], carry);
+            }
+            acc.0[N] = acc.0[N].wrapping_add(carry as u64);
+            return;
+        }
+        // otherwise fma
+        let mut carry = 0;
+        for i in 0..N {
+            acc.0[i] = mac_with_carry!(acc.0[i], self.0[i], other, &mut carry);
+        }
+        acc.0[N] = acc.0[N].wrapping_add(carry as u64);
+    }
+
+    #[inline]
+    #[unroll_for_loops(8)]
+    fn fmu64a_carry_propagating<const NPLUS2: usize>(
+        &self,
+        other: u64,
+        acc: &mut BigInt<NPLUS2>,
+    ) {
+        // ensure NPLUS2 is the correct size (N + 2 limbs)
+        debug_assert!(NPLUS2 == N + 2);
+        if other == 0 || self.is_zero() {
+            return;
+        }
+        if other == 1 {
+            let mut carry: u8 = 0;
+            for i in 0..N {
+                carry = arithmetic::adc_for_add_with_carry(&mut acc.0[i], self.0[i], carry);
+            }
+            let (new_n, of1) = acc.0[N].overflowing_add(carry as u64);
+            acc.0[N] = new_n;
+            if of1 {
+                acc.0[N + 1] = acc.0[N + 1].wrapping_add(1);
+            }
+            return;
+        }
+        let mut carry = 0u64;
+        for i in 0..N {
+            acc.0[i] = mac_with_carry!(acc.0[i], self.0[i], other, &mut carry);
+        }
+        let (new_n, of1) = acc.0[N].overflowing_add(carry);
+        acc.0[N] = new_n;
+        if of1 {
+            acc.0[N + 1] = acc.0[N + 1].wrapping_add(1);
+        }
+    }
+
+    #[inline]
+    #[unroll_for_loops(8)]
+    fn fm128a<const NPLUS2: usize>(&self, other: u128, acc: &mut BigInt<NPLUS2>) {
+        // ensure NPLUS2 is the correct size (N + 2 limbs)
+        debug_assert!(NPLUS2 == N + 2);
+        // special cases for 0 and 1
+        // if other == 0 || self.is_zero() {
+        //     // idempotent
+        //     return;
+        // } else if other == 1 {
+        //     // just addition into lower N limbs; propagate final carry into acc[N]
+        //     let mut carry = 0;
+        //     for i in 0..N {
+        //         carry = arithmetic::adc_for_add_with_carry(&mut acc.0[i], self.0[i], carry);
+        //     }
+        //     // carry is at most 1; fold into limb N (wrapping into highest limb if needed later)
+        //     acc.0[N] = acc.0[N].wrapping_add(carry as u64);
+        //     return;
+        // }
+
+        let other_lo = other as u64;
+        let other_hi = (other >> 64) as u64;
+
+        // Accumulate self * other_lo into acc[0..=N]
+        let mut carry = 0u64;
+        for i in 0..N {
+            acc.0[i] = mac_with_carry!(acc.0[i], self.0[i], other_lo, &mut carry);
+        }
+        // Add final carry into limb N, propagating into highest limb if it overflows
+        let (new_n, of1) = acc.0[N].overflowing_add(carry);
+        acc.0[N] = new_n;
+        if of1 {
+            acc.0[N + 1] = acc.0[N + 1].wrapping_add(1);
+        }
+
+        // Accumulate self * other_hi into acc[1..=N+1]
+        let mut carry2 = 0u64;
+        for i in 0..N {
+            acc.0[i + 1] = mac_with_carry!(acc.0[i + 1], self.0[i], other_hi, &mut carry2);
+        }
+        acc.0[N + 1] = acc.0[N + 1].wrapping_add(carry2);
+    }
+
+    #[inline]
+    #[unroll_for_loops(8)]
+    fn fmu64a_into_nplus4<const NPLUS4: usize>(&self, other: u64, acc: &mut BigInt<NPLUS4>) {
+        debug_assert!(NPLUS4 == N + 4);
+        if other == 0 || self.is_zero() {
+            return;
+        }
+        if other == 1 {
+            let mut carry: u8 = 0;
+            for i in 0..N {
+                carry = arithmetic::adc_for_add_with_carry(&mut acc.0[i], self.0[i], carry);
+            }
+            if carry != 0 {
+                let (n0, of0) = acc.0[N].overflowing_add(1);
+                acc.0[N] = n0;
+                if of0 {
+                    let (n1, of1) = acc.0[N + 1].overflowing_add(1);
+                    acc.0[N + 1] = n1;
+                    if of1 {
+                        let (n2, of2) = acc.0[N + 2].overflowing_add(1);
+                        acc.0[N + 2] = n2;
+                        if of2 {
+                            let (n3, _of3) = acc.0[N + 3].overflowing_add(1);
+                            acc.0[N + 3] = n3;
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        let mut carry0 = 0u64;
+        for i in 0..N {
+            acc.0[i] = mac_with_carry!(acc.0[i], self.0[i], other, &mut carry0);
+        }
+        if carry0 != 0 {
+            let (n0, of0) = acc.0[N].overflowing_add(carry0);
+            acc.0[N] = n0;
+            if of0 {
+                let (n1, of1) = acc.0[N + 1].overflowing_add(1);
+                acc.0[N + 1] = n1;
+                if of1 {
+                    let (n2, of2) = acc.0[N + 2].overflowing_add(1);
+                    acc.0[N + 2] = n2;
+                    if of2 {
+                        let (n3, _of3) = acc.0[N + 3].overflowing_add(1);
+                        acc.0[N + 3] = n3;
+                    }
+                }
+            }
+        }
+    }
+
+    #[inline]
+    #[unroll_for_loops(8)]
+    fn fm2x64a_into_nplus4<const NPLUS4: usize>(&self, other: [u64; 2], acc: &mut BigInt<NPLUS4>) {
+        debug_assert!(NPLUS4 == N + 4);
+        let lo = other[0];
+        let hi = other[1];
+        if (lo | hi) == 0 || self.is_zero() {
+            return;
+        }
+
+        if lo != 0 {
+            let mut carry0 = 0u64;
+            for i in 0..N {
+                acc.0[i] = mac_with_carry!(acc.0[i], self.0[i], lo, &mut carry0);
+            }
+            if carry0 != 0 {
+                let (n0, of0) = acc.0[N].overflowing_add(carry0);
+                acc.0[N] = n0;
+                if of0 {
+                    let (n1, of1) = acc.0[N + 1].overflowing_add(1);
+                    acc.0[N + 1] = n1;
+                    if of1 {
+                        let (n2, of2) = acc.0[N + 2].overflowing_add(1);
+                        acc.0[N + 2] = n2;
+                        if of2 {
+                            let (n3, _of3) = acc.0[N + 3].overflowing_add(1);
+                            acc.0[N + 3] = n3;
+                        }
+                    }
+                }
+            }
+        }
+
+        if hi != 0 {
+            let mut carry1 = 0u64;
+            for i in 0..N {
+                acc.0[i + 1] = mac_with_carry!(acc.0[i + 1], self.0[i], hi, &mut carry1);
+            }
+            if carry1 != 0 {
+                let (n1, of1) = acc.0[N + 1].overflowing_add(carry1);
+                acc.0[N + 1] = n1;
+                if of1 {
+                    let (n2, of2) = acc.0[N + 2].overflowing_add(1);
+                    acc.0[N + 2] = n2;
+                    if of2 {
+                        let (n3, _of3) = acc.0[N + 3].overflowing_add(1);
+                        acc.0[N + 3] = n3;
+                    }
+                }
+            }
+        }
+    }
+
+    #[inline]
+    #[unroll_for_loops(8)]
+    fn fm3x64a_into_nplus4<const NPLUS4: usize>(&self, other: [u64; 3], acc: &mut BigInt<NPLUS4>) {
+        debug_assert!(NPLUS4 == N + 4);
+        let o0 = other[0];
+        let o1 = other[1];
+        let o2 = other[2];
+        if (o0 | o1 | o2) == 0 || self.is_zero() {
+            return;
+        }
+
+        if o0 != 0 {
+            let mut carry0 = 0u64;
+            for i in 0..N {
+                acc.0[i] = mac_with_carry!(acc.0[i], self.0[i], o0, &mut carry0);
+            }
+            if carry0 != 0 {
+                let (n0, of0) = acc.0[N].overflowing_add(carry0);
+                acc.0[N] = n0;
+                if of0 {
+                    let (n1, of1) = acc.0[N + 1].overflowing_add(1);
+                    acc.0[N + 1] = n1;
+                    if of1 {
+                        let (n2, of2) = acc.0[N + 2].overflowing_add(1);
+                        acc.0[N + 2] = n2;
+                        if of2 {
+                            let (n3, _of3) = acc.0[N + 3].overflowing_add(1);
+                            acc.0[N + 3] = n3;
+                        }
+                    }
+                }
+            }
+        }
+
+        if o1 != 0 {
+            let mut carry1 = 0u64;
+            for i in 0..N {
+                acc.0[i + 1] = mac_with_carry!(acc.0[i + 1], self.0[i], o1, &mut carry1);
+            }
+            if carry1 != 0 {
+                let (n1, of1) = acc.0[N + 1].overflowing_add(carry1);
+                acc.0[N + 1] = n1;
+                if of1 {
+                    let (n2, of2) = acc.0[N + 2].overflowing_add(1);
+                    acc.0[N + 2] = n2;
+                    if of2 {
+                        let (n3, _of3) = acc.0[N + 3].overflowing_add(1);
+                        acc.0[N + 3] = n3;
+                    }
+                }
+            }
+        }
+
+        if o2 != 0 {
+            let mut carry2 = 0u64;
+            for i in 0..N {
+                acc.0[i + 2] = mac_with_carry!(acc.0[i + 2], self.0[i], o2, &mut carry2);
+            }
+            if carry2 != 0 {
+                let (n2, of2) = acc.0[N + 2].overflowing_add(carry2);
+                acc.0[N + 2] = n2;
+                if of2 {
+                    let (n3, _of3) = acc.0[N + 3].overflowing_add(1);
+                    acc.0[N + 3] = n3;
+                }
+            }
+        }
+    }
+
+    #[inline]
+    #[unroll_for_loops(8)]
+    fn mul_u128_w_carry<const NPLUS1: usize, const NPLUS2: usize>(
+        &self,
+        other: u128,
+    ) -> BigInt<NPLUS2> {
+        // NPLUS1 is N + 1, NPLUS2 is N + 2
+        debug_assert!(NPLUS1 == N + 1);
+        debug_assert!(NPLUS2 == N + 2);
+        // special cases for 0 and 1
+        if other == 0 || self.is_zero() {
+            return BigInt::<NPLUS2>::zero();
+        } else if other == 1 {
+            let mut res = BigInt::<NPLUS2>::zero();
+            for i in 0..N {
+                res.0[i] = self.0[i];
+            }
+            return res;
+        }
+        // Split other into two u64s and accumulate directly into the result buffer.
+        let other_lo = other as u64;
+        let other_hi = (other >> 64) as u64;
+
+        let mut res = BigInt::<NPLUS2>::zero();
+
+        // First pass: res[i] += self[i] * other_lo
+        let mut carry = 0u64;
+        for i in 0..N {
+            res.0[i] = mac_with_carry!(res.0[i], self.0[i], other_lo, &mut carry);
+        }
+        res.0[N] = carry;
+
+        // Second pass: res[i+1] += self[i] * other_hi
+        let mut carry2 = 0u64;
+        for i in 0..N {
+            res.0[i + 1] = mac_with_carry!(res.0[i + 1], self.0[i], other_hi, &mut carry2);
+        }
+        res.0[N + 1] = carry2;
+
+        res
     }
 
     #[inline]
@@ -1109,6 +1505,52 @@ pub trait BigInteger:
     /// ```
     #[deprecated(since = "0.4.2", note = "please use the operator `<<` instead")]
     fn muln(&mut self, amt: u32);
+
+    /// NEW! Multiplies self by a u64 in place. Overflow is ignored.
+    fn mul_u64_in_place(&mut self, other: u64);
+
+    /// NEW! Multiplies self by a u64, returning a bigint with one extra limb to hold overflow.
+    fn mul_u64_w_carry<const NPLUS1: usize>(&self, other: u64) -> BigInt<NPLUS1>;
+
+    /// NEW! Multiplies self by a u64, accumulating the result in `acc`, which must have one extra limb.
+    /// overflow causes a wraparound in the highest limb of the accumulator.
+    fn fmu64a<const NPLUS1: usize>(&self, other: u64, acc: &mut BigInt<NPLUS1>);
+
+    /// NEW! Fused multiply-accumulate with a u64 multiplier and explicit overflow propagation.
+    /// Accumulates `self * other` into `acc`, which must have two extra limbs (N + 2).
+    /// Any overflow from limb N is carried into limb N+1 instead of wrapping.
+    fn fmu64a_carry_propagating<const NPLUS2: usize>(
+        &self,
+        other: u64,
+        acc: &mut BigInt<NPLUS2>,
+    );
+
+    /// NEW! Multiplies self by a u128, returning a bigint with two extra limbs to hold overflow.
+    fn mul_u128_w_carry<const NPLUS1: usize, const NPLUS2: usize>(
+        &self,
+        other: u128,
+    ) -> BigInt<NPLUS2>;
+
+    /// NEW! Fused multiply-accumulate with a u128 multiplier.
+    /// Accumulate self * other into `acc`, which must have two extra limbs.
+    /// Overflow causes wraparound in the highest limb of the accumulator.
+    fn fm128a<const NPLUS2: usize>(&self, other: u128, acc: &mut BigInt<NPLUS2>);
+
+    /// NEW! Fused multiply-accumulate of `self` by a single `u64` limb, accumulating into
+    /// an accumulator with four extra limbs (N + 4), with carry propagation within the width.
+    /// This will accumulate `self * other` into `acc` and propagate any overflow from limb N
+    /// into limbs N+1..=N+3. Overflow beyond limb N+3 is dropped by contract.
+    fn fmu64a_into_nplus4<const NPLUS4: usize>(&self, other: u64, acc: &mut BigInt<NPLUS4>);
+
+    /// NEW! Fused multiply-accumulate of `self` by a two-limb `[u64; 2]` multiplier, accumulating
+    /// into an accumulator with four extra limbs (N + 4). Carries are propagated within the width.
+    /// This is equivalent to doing two u64 passes offset by one limb and cascading carries.
+    fn fm2x64a_into_nplus4<const NPLUS4: usize>(&self, other: [u64; 2], acc: &mut BigInt<NPLUS4>);
+
+    /// NEW! Fused multiply-accumulate of `self` by a three-limb `[u64; 3]` multiplier, accumulating
+    /// into an accumulator with four extra limbs (N + 4). Carries are propagated within the width.
+    /// This is equivalent to doing three u64 passes offset by 0, 1, and 2 limbs, respectively.
+    fn fm3x64a_into_nplus4<const NPLUS4: usize>(&self, other: [u64; 3], acc: &mut BigInt<NPLUS4>);
 
     /// Multiplies this [`BigInteger`] by another `BigInteger`, storing the result in `self`.
     /// Overflow is ignored.
