@@ -1,4 +1,3 @@
-
 use super::{Fp, FpConfig};
 use crate::{
     biginteger::arithmetic as fa, BigInt, BigInteger, PrimeField, SqrtPrecomputation, Zero,
@@ -1072,7 +1071,10 @@ impl<T: MontConfig<N>, const N: usize> Fp<MontBackend<T, N>, N> {
     /// Two-phase (schoolbook+REDC) multiply with a RHS whose highest K limbs are provided
     /// in `rhs_hi` and lower limbs are zero.
     #[inline]
-    const fn mul_without_cond_subtract_rhs_hi<const K: usize>(mut self, rhs_hi: &crate::BigInt<K>) -> (bool, Self) {
+    const fn mul_without_cond_subtract_rhs_hi<const K: usize>(
+        mut self,
+        rhs_hi: &crate::BigInt<K>,
+    ) -> (bool, Self) {
         let (mut lo, mut hi) = ([0u64; N], [0u64; N]);
         // Schoolbook: only columns j in [N-K, N)
         crate::const_for!((i in 0..N) {
@@ -1225,11 +1227,13 @@ impl<T: MontConfig<N>, const N: usize> Fp<MontBackend<T, N>, N> {
         todo!()
     }
 
+    //TODO: See if you can make these generic or check if Quang already has.
+
     /// Multiply-assign by a RHS that is zero in its low N-2 limbs in Montgomery limbs,
     /// and whose highest two limbs are provided by `hi` (low 64 bits map to limb N-2,
     /// high 64 bits map to limb N-1). This is equivalent to K=2 non-zero high limbs.
     #[inline]
-    pub const fn mul_assign_hi_u128(&mut self, big_int_repre: [u64; 4]) {
+    pub const fn mul_assign_hi_bigint_u128(&mut self, big_int_repre: [u64; 4]) {
         // Construct a synthetic RHS by using the const CIOS with K=2, passing limbs directly.
         // Leverage existing const CIOS specialized by K via a tiny adapter.
         *self = self.const_cios_mul_rhs_hi2(big_int_repre[2], big_int_repre[3]);
@@ -1238,162 +1242,51 @@ impl<T: MontConfig<N>, const N: usize> Fp<MontBackend<T, N>, N> {
     /// Returns self * rhs_high_limbs, where RHS is zero in low N-2 limbs and has its top two
     /// limbs provided by `hi` (low 64 -> limb N-2, high 64 -> limb N-1). Equivalent to K=2.
     #[inline]
-    pub const fn mul_hi_u128(self, big_int_repre: [u64; 4]) -> Self {
+    pub const fn mul_hi_bigint_u128(self, big_int_repre: [u64; 4]) -> Self {
         self.const_cios_mul_rhs_hi2(big_int_repre[2], big_int_repre[3])
     }
 
-    ///// Returns self * rhs_high_limbs, where RHS is zero in low N-2 limbs and has its top two
-    ///// limbs provided by `hi` (low 64 -> limb N-2, high 64 -> limb N-1). Equivalent to K=2.
-    ///// This is really the same as the above but we don't always do shifts per multiplication.
+    ///// Returns self * BigInt<K> that populates the highest K Montgomery limbs of the RHS,
+    ///// with all lower limbs zero.
     //#[inline]
-    //pub const fn mul_hi_u128_no_shifts(self, hi: u64, lo: u64) -> Self {
-    //    self.const_cios_mul_rhs_hi2(lo, hi)
+    //pub const fn mul_hi_bigint<const K: usize>(self, rhs_hi: &crate::BigInt<K>) -> Self {
+    //    if T::CAN_USE_NO_CARRY_MUL_OPT {
+    //        self.const_cios_mul_rhs_hi::<K>(rhs_hi)
+    //    } else {
+    //        let (carry, res) = self.mul_without_cond_subtract_rhs_hi::<K>(rhs_hi);
+    //        if T::MODULUS_HAS_SPARE_BIT {
+    //            res.const_subtract_modulus()
+    //        } else {
+    //            res.const_subtract_modulus_with_carry(carry)
+    //        }
+    //    }
     //}
-    //
-    /// Const-capable CIOS fastpath specialized for exactly two high limbs (K=2), passed
-    /// directly as u64s instead of via an Fp operand. Assumes all lower limbs are zero.
-    #[inline]
-    #[allow(unused_assignments)]
-    const fn const_cios_mul_rhs_hi2(self, limb_n2: u64, limb_n1: u64) -> Self {
-        let mut r = [0u64; N];
-        // i = N-2
-        if N >= 2 {
-            let mut carry1 = 0u64;
-            r[0] = mac!(r[0], (self.0).0[0], limb_n2, &mut carry1);
-            let k = r[0].wrapping_mul(T::INV);
-            let mut carry2 = 0u64;
-            let _discard = mac!(r[0], k, T::MODULUS.0[0], &mut carry2);
-            crate::const_for!((j in 1..N) {
-                let new_rj = mac_with_carry!(r[j], (self.0).0[j], limb_n2, &mut carry1);
-                let new_rj_minus_1 = mac_with_carry!(new_rj, k, T::MODULUS.0[j], &mut carry2);
-                r[j] = new_rj;
-                r[j - 1] = new_rj_minus_1;
-            });
-            r[N - 1] = carry1.wrapping_add(carry2);
-        }
-        // i = N-1
-        {
-            let mut carry1 = 0u64;
-            r[0] = mac!(r[0], (self.0).0[0], limb_n1, &mut carry1);
-            let k = r[0].wrapping_mul(T::INV);
-            let mut carry2 = 0u64;
-            let _discard = mac!(r[0], k, T::MODULUS.0[0], &mut carry2);
-            crate::const_for!((j in 1..N) {
-                let new_rj = mac_with_carry!(r[j], (self.0).0[j], limb_n1, &mut carry1);
-                let new_rj_minus_1 = mac_with_carry!(new_rj, k, T::MODULUS.0[j], &mut carry2);
-                r[j] = new_rj;
-                r[j - 1] = new_rj_minus_1;
-            });
-            r[N - 1] = carry1.wrapping_add(carry2);
-        }
-        let mut out = Self::new_unchecked(crate::BigInt::<N>(r));
-        out = out.const_subtract_modulus();
-        out
-    }
 
-    /// Multiply-assign by a BigInt<K> that populates the highest K Montgomery limbs of the RHS,
-    /// with all lower limbs zero. Lower 64 bits of `rhs_hi.0[0]` map to limb N-K, etc.
-    #[inline]
-    pub const fn mul_assign_hi_bigint<const K: usize>(&mut self, rhs_hi: &crate::BigInt<K>) {
-        if T::CAN_USE_NO_CARRY_MUL_OPT {
-            *self = self.const_cios_mul_rhs_hi::<K>(rhs_hi);
-        } else {
-            let (carry, res) = self.mul_without_cond_subtract_rhs_hi::<K>(rhs_hi);
-            *self = res;
-            if T::MODULUS_HAS_SPARE_BIT {
-                self.const_subtract_modulus();
-            } else {
-                self.const_subtract_modulus_with_carry(carry);
-            }
-        }
-    }
-
-    /// Returns self * BigInt<K> that populates the highest K Montgomery limbs of the RHS,
-    /// with all lower limbs zero.
-    #[inline]
-    pub const fn mul_hi_bigint<const K: usize>(self, rhs_hi: &crate::BigInt<K>) -> Self {
-        if T::CAN_USE_NO_CARRY_MUL_OPT {
-            self.const_cios_mul_rhs_hi::<K>(rhs_hi)
-        } else {
-            let (carry, res) = self.mul_without_cond_subtract_rhs_hi::<K>(rhs_hi);
-            if T::MODULUS_HAS_SPARE_BIT {
-                res.const_subtract_modulus()
-            } else {
-                res.const_subtract_modulus_with_carry(carry)
-            }
-        }
-    }
-
-    /// Const-capable CIOS kernel for a RHS with exactly K non-zero HIGH limbs provided via BigInt<K>.
-    #[inline]
-    #[allow(unused_assignments)]
-    const fn const_cios_mul_rhs_hi<const K: usize>(self, rhs_hi: &crate::BigInt<K>) -> Self {
-        let mut r = [0u64; N];
-        // Iterate high columns: t indexes 0..K-1 mapping to global i = N-K+t
-        crate::const_for!((t in 0..K) {
-            let b_i = rhs_hi.0[t];
-            let mut carry1 = 0u64;
-            r[0] = mac!(r[0], (self.0).0[0], b_i, &mut carry1);
-            let k = r[0].wrapping_mul(T::INV);
-            let mut carry2 = 0u64;
-            let _discard = mac!(r[0], k, T::MODULUS.0[0], &mut carry2);
-            crate::const_for!((j in 1..N) {
-                let new_rj = mac_with_carry!(r[j], (self.0).0[j], b_i, &mut carry1);
-                let new_rj_minus_1 = mac_with_carry!(new_rj, k, T::MODULUS.0[j], &mut carry2);
-                r[j] = new_rj;
-                r[j - 1] = new_rj_minus_1;
-            });
-            r[N - 1] = carry1.wrapping_add(carry2);
-        });
-        let mut out = Self::new_unchecked(crate::BigInt::<N>(r));
-        out = out.const_subtract_modulus();
-        out
-    }
-
-    /// Two-phase (schoolbook+REDC) multiply with a RHS whose highest K limbs are provided
-    /// in `rhs_hi` and lower limbs are zero.
-    #[inline]
-    const fn mul_without_cond_subtract_rhs_hi<const K: usize>(
-        mut self,
-        rhs_hi: &crate::BigInt<K>,
-    ) -> (bool, Self) {
-        let (mut lo, mut hi) = ([0u64; N], [0u64; N]);
-        // Schoolbook: only columns j in [N-K, N)
-        crate::const_for!((i in 0..N) {
-            let mut carry = 0u64;
-            crate::const_for!((t in 0..K) {
-                let j = N - K + t;
-                let b = rhs_hi.0[t];
-                let k = i + j;
-                if k >= N {
-                    hi[k - N] = mac_with_carry!(hi[k - N], (self.0).0[i], b, &mut carry);
-                } else {
-                    lo[k] = mac_with_carry!(lo[k], (self.0).0[i], b, &mut carry);
-                }
-            });
-            hi[i] = carry;
-        });
-        // REDC: only i in [N-K, N)
-        let mut carry2 = 0u64;
-        crate::const_for!((i in 0..N) {
-            if i < N - K { /* skip */ } else {
-                let tmp = lo[i].wrapping_mul(T::INV);
-                let mut carry;
-                mac!(lo[i], tmp, T::MODULUS.0[0], &mut carry);
-                crate::const_for!((j in 1..N) {
-                    let k = i + j;
-                    if k >= N {
-                        hi[k - N] = mac_with_carry!(hi[k - N], tmp, T::MODULUS.0[j], &mut carry);
-                    }  else {
-                        lo[k] = mac_with_carry!(lo[k], tmp, T::MODULUS.0[j], &mut carry);
-                    }
-                });
-                hi[i] = adc!(hi[i], carry, &mut carry2);
-            }
-        });
-        crate::const_for!((i in 0..N) { (self.0).0[i] = hi[i]; });
-        (carry2 != 0, self)
-    }
+    ///// Const-capable CIOS kernel for a RHS with exactly K non-zero HIGH limbs provided via BigInt<K>.
+    //#[inline]
+    //#[allow(unused_assignments)]
+    //const fn const_cios_mul_rhs_hi<const K: usize>(self, rhs_hi: &crate::BigInt<K>) -> Self {
+    //    let mut r = [0u64; N];
+    //    // Iterate high columns: t indexes 0..K-1 mapping to global i = N-K+t
+    //    crate::const_for!((t in 0..K) {
+    //        let b_i = rhs_hi.0[t];
+    //        let mut carry1 = 0u64;
+    //        r[0] = mac!(r[0], (self.0).0[0], b_i, &mut carry1);
+    //        let k = r[0].wrapping_mul(T::INV);
+    //        let mut carry2 = 0u64;
+    //        let _discard = mac!(r[0], k, T::MODULUS.0[0], &mut carry2);
+    //        crate::const_for!((j in 1..N) {
+    //            let new_rj = mac_with_carry!(r[j], (self.0).0[j], b_i, &mut carry1);
+    //            let new_rj_minus_1 = mac_with_carry!(new_rj, k, T::MODULUS.0[j], &mut carry2);
+    //            r[j] = new_rj;
+    //            r[j - 1] = new_rj_minus_1;
+    //        });
+    //        r[N - 1] = carry1.wrapping_add(carry2);
+    //    });
+    //    let mut out = Self::new_unchecked(crate::BigInt::<N>(r));
+    //    out = out.const_subtract_modulus();
+    //    out
+    //}
 
     const fn const_is_valid(&self) -> bool {
         crate::const_for!((i in 0..N) {
@@ -1430,19 +1323,15 @@ impl<T: MontConfig<N>, const N: usize> Fp<MontBackend<T, N>, N> {
     /// This avoids creating temporary BigInt<NPLUS1> objects.
     #[inline(always)]
     #[unroll_for_loops(8)]
-    fn mul_u64_accumulate<const NPLUS1: usize>(
-        acc: &mut BigInt<NPLUS1>, 
-        a: &BigInt<N>, 
-        b: u64
-    ) {
+    fn mul_u64_accumulate<const NPLUS1: usize>(acc: &mut BigInt<NPLUS1>, a: &BigInt<N>, b: u64) {
         debug_assert!(NPLUS1 == N + 1);
         use crate::biginteger::arithmetic as fa;
-        
+
         let mut carry = 0u64;
         for i in 0..N {
             acc.0[i] = fa::mac_with_carry(acc.0[i], a.0[i], b, &mut carry);
         }
-        
+
         // Add final carry to the high limb
         let final_carry = fa::adc(&mut acc.0[N], carry, 0);
         debug_assert!(final_carry == 0, "overflow in mul_u64_accumulate");
@@ -1452,20 +1341,21 @@ impl<T: MontConfig<N>, const N: usize> Fp<MontBackend<T, N>, N> {
     /// Performs unreduced accumulation in BigInt<NPLUS1>, then one final reduction.
     /// This is more efficient than individual multiplications and additions.
     #[inline(always)]
-    pub fn linear_combination_u64<const NPLUS1: usize>(
-        pairs: &[(Self, u64)]
-    ) -> Self {
+    pub fn linear_combination_u64<const NPLUS1: usize>(pairs: &[(Self, u64)]) -> Self {
         debug_assert!(NPLUS1 == N + 1);
-        debug_assert!(!pairs.is_empty(), "linear_combination_u64 requires at least one pair");
-        
+        debug_assert!(
+            !pairs.is_empty(),
+            "linear_combination_u64 requires at least one pair"
+        );
+
         // Start with first term
-        let mut acc = pairs[0].0.0.mul_u64_w_carry::<NPLUS1>(pairs[0].1);
-        
+        let mut acc = pairs[0].0 .0.mul_u64_w_carry::<NPLUS1>(pairs[0].1);
+
         // Accumulate remaining terms using multiply-accumulate to avoid temporaries
         for (a, b) in &pairs[1..] {
             Self::mul_u64_accumulate::<NPLUS1>(&mut acc, &a.0, *b);
         }
-        
+
         Self::from_unchecked_nplus1::<NPLUS1>(acc)
     }
 
@@ -1474,37 +1364,43 @@ impl<T: MontConfig<N>, const N: usize> Fp<MontBackend<T, N>, N> {
     /// sums are computed separately and subtracted. One final reduction is performed.
     #[inline(always)]
     pub fn linear_combination_i64<const NPLUS1: usize>(
-        pos: &[(Self, u64)], 
-        neg: &[(Self, u64)]
+        pos: &[(Self, u64)],
+        neg: &[(Self, u64)],
     ) -> Self {
         debug_assert!(NPLUS1 == N + 1);
-        debug_assert!(!pos.is_empty(), "linear_combination_i64 requires at least one positive term");
-        debug_assert!(!neg.is_empty(), "linear_combination_i64 requires at least one negative term");
-        
+        debug_assert!(
+            !pos.is_empty(),
+            "linear_combination_i64 requires at least one positive term"
+        );
+        debug_assert!(
+            !neg.is_empty(),
+            "linear_combination_i64 requires at least one negative term"
+        );
+
         // Compute unreduced positive sum
-        let mut pos_lc = pos[0].0.0.mul_u64_w_carry::<NPLUS1>(pos[0].1);
+        let mut pos_lc = pos[0].0 .0.mul_u64_w_carry::<NPLUS1>(pos[0].1);
         for (a, b) in &pos[1..] {
             Self::mul_u64_accumulate::<NPLUS1>(&mut pos_lc, &a.0, *b);
         }
-        
+
         // Compute unreduced negative sum
-        let mut neg_lc = neg[0].0.0.mul_u64_w_carry::<NPLUS1>(neg[0].1);
+        let mut neg_lc = neg[0].0 .0.mul_u64_w_carry::<NPLUS1>(neg[0].1);
         for (a, b) in &neg[1..] {
             Self::mul_u64_accumulate::<NPLUS1>(&mut neg_lc, &a.0, *b);
         }
-        
+
         // Subtract and reduce once
         match pos_lc.cmp(&neg_lc) {
             core::cmp::Ordering::Greater => {
                 let borrow = pos_lc.sub_with_borrow(&neg_lc);
                 debug_assert!(!borrow, "borrow in linear_combination_i64");
                 Self::from_unchecked_nplus1::<NPLUS1>(pos_lc)
-            }
+            },
             core::cmp::Ordering::Less => {
                 let borrow = neg_lc.sub_with_borrow(&pos_lc);
                 debug_assert!(!borrow, "borrow in linear_combination_i64");
                 -Self::from_unchecked_nplus1::<NPLUS1>(neg_lc)
-            }
+            },
             core::cmp::Ordering::Equal => Self::zero(),
         }
     }
@@ -1513,11 +1409,13 @@ impl<T: MontConfig<N>, const N: usize> Fp<MontBackend<T, N>, N> {
     /// Avoids slice overhead and loop setup costs.
     #[inline(always)]
     pub fn linear_combination_u64_2<const NPLUS1: usize>(
-        a1: &Self, b1: u64,
-        a2: &Self, b2: u64
+        a1: &Self,
+        b1: u64,
+        a2: &Self,
+        b2: u64,
     ) -> Self {
         debug_assert!(NPLUS1 == N + 1);
-        
+
         let mut acc = a1.0.mul_u64_w_carry::<NPLUS1>(b1);
         Self::mul_u64_accumulate::<NPLUS1>(&mut acc, &a2.0, b2);
         Self::from_unchecked_nplus1::<NPLUS1>(acc)
@@ -1526,12 +1424,15 @@ impl<T: MontConfig<N>, const N: usize> Fp<MontBackend<T, N>, N> {
     /// Optimized version for exactly 3 terms: a₁×b₁ + a₂×b₂ + a₃×b₃
     #[inline(always)]
     pub fn linear_combination_u64_3<const NPLUS1: usize>(
-        a1: &Self, b1: u64,
-        a2: &Self, b2: u64,
-        a3: &Self, b3: u64
+        a1: &Self,
+        b1: u64,
+        a2: &Self,
+        b2: u64,
+        a3: &Self,
+        b3: u64,
     ) -> Self {
         debug_assert!(NPLUS1 == N + 1);
-        
+
         let mut acc = a1.0.mul_u64_w_carry::<NPLUS1>(b1);
         Self::mul_u64_accumulate::<NPLUS1>(&mut acc, &a2.0, b2);
         Self::mul_u64_accumulate::<NPLUS1>(&mut acc, &a3.0, b3);
@@ -1777,9 +1678,10 @@ fn barrett_reduce_nplus1_to_n<T: MontConfig<N>, const N: usize, const NPLUS1: us
     // Compute r_tmp = c - m * 2p (result is ([u64; N], u64))
     let m_times_2p = (
         m2p.0[0..N].try_into().unwrap(), // Convert to ([u64; N], u64)
-        m2p.0[N] // High limb remains as u64
+        m2p.0[N],                        // High limb remains as u64
     );
-    let (r_tmp, r_tmp_borrow) = sub_bigint_plus_one_prime((c.0[0], c.0[1..N+1].try_into().unwrap()), m_times_2p);
+    let (r_tmp, r_tmp_borrow) =
+        sub_bigint_plus_one_prime((c.0[0], c.0[1..N + 1].try_into().unwrap()), m_times_2p);
     // A borrow here implies c was smaller than m*2p, which shouldn't happen with correct m.
     debug_assert!(!r_tmp_borrow, "Borrow occurred calculating c - m*2p");
     // Change formats again!
@@ -1787,7 +1689,7 @@ fn barrett_reduce_nplus1_to_n<T: MontConfig<N>, const N: usize, const NPLUS1: us
     // Alternative simple BigInt subtraction (much slower for some reason):
     /*let (r_tmp_bigint, r_borrow) = c.const_sub_with_borrow(&m2p);
     debug_assert!(!r_borrow, "Borrow occurred calculating c - m*2p");*/
-    
+
     // Use the optimized conditional subtraction to go from N+1 limbs to N limbs.
     barrett_cond_subtract::<T, N, NPLUS1>(r_tmp_bigint)
 }
