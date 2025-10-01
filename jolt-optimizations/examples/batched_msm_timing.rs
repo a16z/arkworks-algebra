@@ -14,8 +14,8 @@ use std::time::Instant;
 fn main() {
     let args: Vec<String> = env::args().collect();
 
-    let n = 1 << 15;
-    let m = 1 << 5;
+    let n = 1 << 11;
+    let m = 1 << 11;
 
     println!("Batched MSM Timing Test");
     println!("Points per MSM (n): {}", n);

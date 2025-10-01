@@ -29,9 +29,9 @@ pub struct BatchedMsmConfig {
 impl Default for BatchedMsmConfig {
     fn default() -> Self {
         Self {
-            window_bits: Some(4), // Auto-select
-            tile_k: 8,
-            col_chunk: 64_000,
+            window_bits: Some(7), // Auto-select
+            tile_k: 64,
+            col_chunk: 1 << 8,
             mixed_add: true,
             use_glv: true,
         }
@@ -118,53 +118,69 @@ fn precompute_glv_tile(scalars: &[Fr], use_glv: bool) -> GlvSplit {
     }
 }
 
-/// Per-window digit extraction
-struct WindowDigits {
-    u0: Vec<u16>,
-    u1: Vec<u16>,
+/// All digits for all windows: [num_windows][N]
+struct AllWindowDigits {
+    // u0[window_idx][scalar_idx]
+    u0: Vec<Vec<u16>>,
+    // u1[window_idx][scalar_idx] (if GLV)
+    u1: Vec<Vec<u16>>,
 }
 
-/// Compute digits for a specific window from precomputed GLV split
-fn compute_window_digits(
+/// Precompute ALL window digits at once (not per-window)
+fn compute_all_window_digits(
     glv: &GlvSplit,
-    window_idx: usize,
+    num_windows: usize,
     window_bits: usize,
     use_glv: bool,
-) -> WindowDigits {
-    let u0: Vec<u16> = glv
-        .mag0
-        .par_iter()
-        .map(|m| extract_digit_u(m, window_idx, window_bits))
+) -> AllWindowDigits {
+    let n = glv.mag0.len();
+
+    // Precompute all windows for u0
+    let u0: Vec<Vec<u16>> = (0..num_windows)
+        .into_par_iter()
+        .map(|w_idx| {
+            glv.mag0
+                .iter()
+                .map(|m| extract_digit_u(m, w_idx, window_bits))
+                .collect()
+        })
         .collect();
 
-    let u1: Vec<u16> = if use_glv {
-        glv.mag1
-            .par_iter()
-            .map(|m| extract_digit_u(m, window_idx, window_bits))
+    let u1: Vec<Vec<u16>> = if use_glv {
+        (0..num_windows)
+            .into_par_iter()
+            .map(|w_idx| {
+                glv.mag1
+                    .iter()
+                    .map(|m| extract_digit_u(m, w_idx, window_bits))
+                    .collect()
+            })
             .collect()
     } else {
-        Vec::new()
+        vec![vec![]; num_windows]
     };
 
-    WindowDigits { u0, u1 }
+    AllWindowDigits { u0, u1 }
 }
 
 /// Build CSR structure using precomputed digits
 fn build_csr_from_digits(
-    digits_tile: &[(&WindowDigits, &GlvSplit)], // K_eff entries
+    all_digits_tile: &[&AllWindowDigits], // K_eff entries
+    glv_splits: &[&GlvSplit],
+    window_idx: usize,
     col_start: usize,
     col_end: usize,
     use_glv: bool,
     b_max: usize,
 ) -> CsrBuckets {
-    let k_eff = digits_tile.len();
-    let n = digits_tile[0].0.u0.len();
+    let k_eff = all_digits_tile.len();
+    let n = all_digits_tile[0].u0[0].len();
 
     // Phase A: Histogram counts
     let counts: Vec<Vec<usize>> = (0..k_eff)
         .into_par_iter()
         .map(|k| {
-            let (digits, glv) = digits_tile[k];
+            let all_digits = all_digits_tile[k];
             let mut cnt = vec![0usize; b_max];
 
             for col in col_start..col_end {
@@ -183,9 +199,9 @@ fn build_csr_from_digits(
                 }
 
                 let u = if is_phi {
-                    digits.u1[scalar_idx]
+                    all_digits.u1[window_idx][scalar_idx]
                 } else {
-                    digits.u0[scalar_idx]
+                    all_digits.u0[window_idx][scalar_idx]
                 } as usize;
 
                 debug_assert!(u <= b_max, "digit u={} out of range (max={})", u, b_max);
@@ -221,7 +237,8 @@ fn build_csr_from_digits(
     let mut write_pos = row_ptr.clone();
 
     for k in 0..k_eff {
-        let (digits, glv) = digits_tile[k];
+        let all_digits = all_digits_tile[k];
+        let glv = glv_splits[k];
 
         for col in col_start..col_end {
             let (scalar_idx, is_phi) = if use_glv {
@@ -239,9 +256,15 @@ fn build_csr_from_digits(
             }
 
             let (u, sign_pos) = if is_phi {
-                (digits.u1[scalar_idx] as usize, glv.sign1_pos[scalar_idx])
+                (
+                    all_digits.u1[window_idx][scalar_idx] as usize,
+                    glv.sign1_pos[scalar_idx],
+                )
             } else {
-                (digits.u0[scalar_idx] as usize, glv.sign0_pos[scalar_idx])
+                (
+                    all_digits.u0[window_idx][scalar_idx] as usize,
+                    glv.sign0_pos[scalar_idx],
+                )
             };
 
             if u != 0 {
@@ -552,30 +575,74 @@ fn segmented_bucket_reduction(
     buckets
 }
 
-/// Compute running sum and fold into accumulator (with empty bucket trimming)
+/// Add k*p to dst using binary ladder (for small k)
+#[inline]
+fn add_mul_small(dst: &mut G1Projective, p: &G1Projective, mut k: usize) {
+    if k == 0 {
+        return;
+    }
+    let mut base = *p;
+    while k > 0 {
+        if k & 1 == 1 {
+            *dst += base;
+        }
+        base.double_in_place();
+        k >>= 1;
+    }
+}
+
+/// Compute running sum and fold into accumulator (gap-skipping for sparse buckets)
 fn running_sum_and_fold(
     buckets: &[Vec<G1Projective>],
-    b_hi: &[usize],
+    _b_hi: &[usize],
     accumulators: &mut [G1Projective],
     window_bits: usize,
 ) {
-    let k_eff = buckets.len();
+    for (k, row) in buckets.iter().enumerate() {
+        // Collect non-empty bucket indices
+        let mut nz: Vec<usize> = Vec::with_capacity(row.len().min(256));
+        for (i, bsum) in row.iter().enumerate() {
+            if !bsum.is_zero() {
+                nz.push(i + 1); // Store as 1-based bucket index
+            }
+        }
 
-    for k in 0..k_eff {
+        let acc = &mut accumulators[k];
+
+        if nz.is_empty() {
+            // Just do 2^w doublings; nothing to add
+            for _ in 0..window_bits {
+                acc.double_in_place();
+            }
+            continue;
+        }
+
+        nz.sort_unstable(); // Ascending order
         let mut running_sum = G1Projective::zero();
         let mut window_sum = G1Projective::zero();
+        let mut prev = row.len() + 1; // Start "above" max bucket
 
-        let hi = b_hi[k]; // Only iterate over non-empty buckets
-        for b in (0..hi).rev() {
-            running_sum += &buckets[k][b];
-            window_sum += &running_sum;
+        // Walk from highest bucket down, skipping gaps
+        for &b in nz.iter().rev() {
+            let gap = prev - b - 1; // Number of empty buckets above b
+            if gap > 0 {
+                add_mul_small(&mut window_sum, &running_sum, gap);
+            }
+            running_sum += &row[b - 1]; // Add this bucket
+            window_sum += &running_sum; // Account for b itself
+            prev = b;
         }
 
-        // Fold into accumulator: ACC = 2^w * ACC + window_sum
+        // Final tail below smallest non-empty bucket
+        if prev > 1 {
+            add_mul_small(&mut window_sum, &running_sum, prev - 1);
+        }
+
+        // Fold: ACC = 2^w * ACC + window_sum
         for _ in 0..window_bits {
-            accumulators[k].double_in_place();
+            acc.double_in_place();
         }
-        accumulators[k] += &window_sum;
+        *acc += &window_sum;
     }
 }
 
@@ -661,6 +728,17 @@ pub fn msm_batched_bn254_tile_k(
             .collect();
         total_glv_time += start_glv.elapsed();
 
+        // Precompute ALL window digits ONCE for this tile
+        let start_digits = Instant::now();
+        let all_window_digits: Vec<AllWindowDigits> = glv_splits
+            .par_iter()
+            .map(|glv| compute_all_window_digits(glv, num_windows, window_bits, use_glv))
+            .collect();
+        total_digits_time += start_digits.elapsed();
+
+        let all_digits_refs: Vec<&AllWindowDigits> = all_window_digits.iter().collect();
+        let glv_splits_refs: Vec<&GlvSplit> = glv_splits.iter().collect();
+
         let mut accumulators = vec![G1Projective::zero(); k_eff];
         let b_max = (1usize << window_bits) - 1;
         let mut window_buckets = vec![vec![G1Projective::zero(); b_max]; k_eff];
@@ -674,18 +752,6 @@ pub fn msm_batched_bn254_tile_k(
                 }
             }
 
-            // Precompute digits for this window across all K MSMs
-            let start_digits = Instant::now();
-            let window_digits: Vec<WindowDigits> = glv_splits
-                .par_iter()
-                .map(|glv| compute_window_digits(glv, window_idx, window_bits, use_glv))
-                .collect();
-            total_digits_time += start_digits.elapsed();
-
-            // Prepare digit/glv pairs for CSR builder
-            let digits_glv_pairs: Vec<(&WindowDigits, &GlvSplit)> =
-                window_digits.iter().zip(glv_splits.iter()).collect();
-
             // Track highest used bucket across all chunks for this window
             let mut b_hi_window = vec![0usize; k_eff];
 
@@ -695,8 +761,15 @@ pub fn msm_batched_bn254_tile_k(
 
                 // Build CSR using precomputed digits
                 let start_csr = Instant::now();
-                let csr =
-                    build_csr_from_digits(&digits_glv_pairs, col_start, col_end, use_glv, b_max);
+                let csr = build_csr_from_digits(
+                    &all_digits_refs,
+                    &glv_splits_refs,
+                    window_idx,
+                    col_start,
+                    col_end,
+                    use_glv,
+                    b_max,
+                );
                 total_csr_time += start_csr.elapsed();
 
                 // Update b_hi_window with max from this chunk
