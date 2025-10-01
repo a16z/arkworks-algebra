@@ -18,6 +18,7 @@ pub mod dory_utils;
 pub mod fq12_poly;
 pub mod frobenius;
 pub mod glv_two;
+pub mod msm;
 pub mod witness_gen;
 
 mod glv_four;
@@ -63,3 +64,5 @@ pub use fq12_poly::{
 };
 
 pub use witness_gen::ExponentiationSteps;
+
+pub use msm::{msm_batched_bn254_tile_k, BatchedMsmConfig};
