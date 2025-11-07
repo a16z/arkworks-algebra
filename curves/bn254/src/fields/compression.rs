@@ -4,11 +4,13 @@ use ark_ec::bn::FromPsi6Pow;
 /// This module contains relevant data structures such as compressible Fq12 and compressed Fq12
 /// and the relevant compression and conversion functions.
 use ark_ff::{AdditiveGroup, Field, Fp12, Fp12Config, Fp6Config, MontFp};
+use ark_ff::vec::Vec;
+use ark_serialize::{ CanonicalDeserialize, CanonicalSerialize};
 
 pub type CompressibleFq12 = Fp12<CompressibleFq12Config>;
 
 // https://eprint.iacr.org/2007/429.pdf Proposition 1
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, CanonicalSerialize, CanonicalDeserialize)]
 pub struct CompressedFq12(pub (Fq2, Fq2));
 
 #[derive(Clone, Copy)]

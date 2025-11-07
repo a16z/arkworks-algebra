@@ -20,7 +20,7 @@ use zeroize::Zeroize;
 use crate::{AffineRepr, CurveGroup, PrimeGroup, VariableBaseMSM};
 
 pub trait CompressedPairing: Pairing {
-    type CompressedTargetField;
+    type CompressedTargetField: Sync + CanonicalSerialize + CanonicalDeserialize;
 
     fn compressed_final_exponentiation(
         f: MillerLoopOutput<Self>,
