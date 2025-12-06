@@ -150,6 +150,7 @@ pub fn torus_compress_psi_6_pow_to_two_fq2(element: CompressibleFq12) -> Compres
 #[inline]
 pub fn fq12_to_compressible_fq12(value: Fq12) -> CompressibleFq12 {
     // Divide by the generator of Fq6
+    assert!(value != Fq12::ONE, "Element is the identity!");
     let new_c1 = Fq6 {
         c0: value.c1.c1,
         c1: value.c1.c2,
