@@ -58,10 +58,10 @@ mod test {
     use ark_std::{test_rng, vec::Vec};
 
     use crate::bn254::{
-        compressible_fq12_to_fq12, fq12_to_compressible_fq12, torus_compress_fq6,
-        torus_compress_psi_6_pow_to_two_fq2, torus_decompress_fq6, Bn254, CompressibleConfig,
-        CompressibleFq12, Config, Fq12, Fq12Config, Fq2, Fq6, Fq6Config, G1Projective,
-        G2Projective,
+        compressible_fq12_to_fq12, fq12_to_compressible_fq12, mul_compressed_fq6,
+        torus_compress_fq6, torus_compress_psi_6_pow_to_two_fq2, torus_decompress_fq6, Bn254,
+        CompressedFq12, CompressibleConfig, CompressibleFq12, Config, Fq12, Fq12Config, Fq2, Fq6,
+        Fq6Config, G1Projective, G2Projective,
     };
     use ark_ec::{pairing::*, CurveGroup, PrimeGroup};
 
@@ -266,6 +266,87 @@ mod test {
                 miller_loop_output.cyclotomic_exp(PSI_6),
                 miller_loop_output.pow(PSI_6)
             );
+        }
+    }
+
+    #[test]
+    fn test_homomorphic_combine() {
+        let num_trials = 10;
+        let mut rng = test_rng();
+
+        for _ in 0..num_trials {
+            // Generate an array of random pairing values
+            let compressed_pairing_values: Vec<CompressedFq12> = (0..5)
+                .map(|_| {
+                    let g1 = G1Projective::rand(&mut rng);
+                    let g2 = G2Projective::rand(&mut rng);
+
+                    Bn254::compressed_pairing(g1, g2)
+                })
+                .collect();
+
+            let pairing_values: Vec<Fq12> = compressed_pairing_values
+                .iter()
+                .map(|e| e.decompress_to_fq12())
+                .collect::<Vec<_>>();
+
+            let compressed_prod =
+                CompressedFq12::homomorphic_combine_pairing_values(&compressed_pairing_values);
+            let prod = pairing_values.iter().fold(Fq12::ONE, |acc, e| acc * e);
+
+            assert_eq!(compressed_prod.decompress_to_fq12(), prod);
+        }
+    }
+
+    #[test]
+    fn test_homomorphic_mul_fq6() {
+        let num_trials = 10;
+        let mut rng = test_rng();
+
+        for _ in 0..num_trials {
+            // Test multiplication of two elements.
+            let lhs = Fq6::rand(&mut rng);
+            let rhs = Fq6::rand(&mut rng);
+            let result = mul_compressed_fq6(lhs, rhs);
+            let expected =
+                CompressibleFq12::torus_decompress(lhs) * CompressibleFq12::torus_decompress(rhs);
+            assert_eq!(CompressibleFq12::torus_decompress(result), expected);
+        }
+
+        for _ in 0..num_trials {
+            // Test multiplication of two elements, where the first is one.
+            let lhs = Fq6::ONE;
+            let rhs = Fq6::rand(&mut rng);
+            let result = mul_compressed_fq6(lhs, rhs);
+            let expected =
+                CompressibleFq12::torus_decompress(lhs) * CompressibleFq12::torus_decompress(rhs);
+            assert_eq!(CompressibleFq12::torus_decompress(result), expected);
+        }
+
+        for _ in 0..num_trials {
+            // Test multiplication of two elements from compressed fq12.
+            let lhs = CompressedFq12((Fq2::rand(&mut rng), Fq2::rand(&mut rng)));
+            let rhs = CompressedFq12((Fq2::rand(&mut rng), Fq2::rand(&mut rng)));
+            let result = mul_compressed_fq6(lhs.decompress_to_fq6(), rhs.decompress_to_fq6());
+            let expected = CompressibleFq12::torus_decompress(lhs.decompress_to_fq6())
+                * CompressibleFq12::torus_decompress(rhs.decompress_to_fq6());
+            assert_eq!(CompressibleFq12::torus_decompress(result), expected);
+        }
+
+        for _ in 0..num_trials {
+            // Test multiplication of three elements.
+            let arg0 = Fq6::rand(&mut rng);
+            let arg1 = Fq6::rand(&mut rng);
+            let arg2 = Fq6::rand(&mut rng);
+
+            let mut result = mul_compressed_fq6(arg0, arg1);
+            result = mul_compressed_fq6(result, arg2);
+
+            let mut expected =
+                CompressibleFq12::torus_decompress(arg0) * CompressibleFq12::torus_decompress(arg1);
+            expected = expected * CompressibleFq12::torus_decompress(arg2);
+
+            assert_eq!(expected, CompressibleFq12::torus_decompress(result));
         }
     }
 }

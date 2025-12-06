@@ -94,24 +94,56 @@ impl FromPsi6Pow<Config> for CompressedFq12 {
     }
 }
 
+pub fn mul_compressed_fq6(lhs: Fq6, rhs: Fq6) -> Fq6 {
+    let nonresidue = Fq6::new(Fq6Config::NONRESIDUE, Fq2::ZERO, Fq2::ZERO);
+
+    (lhs * rhs + nonresidue) / (lhs + rhs)
+}
+
 impl CompressedFq12 {
+    pub fn homomorphic_combine_pairing_values(elements: &[Self]) -> Self {
+        assert!(
+            !elements.is_empty(),
+            "Cannot combine an empty array of compressed Fq12 elements."
+        );
+        if elements.len() == 1 {
+            return elements[0];
+        } else {
+            // Note we cannot simply just fold the elements together with 1 since Fq6::ONE does not represent a valid compressed Fq6 element.
+            let combined_fq6 = elements[1..]
+                .iter()
+                .fold(elements[0].decompress_to_fq6(), |acc, e| {
+                    mul_compressed_fq6(acc, e.decompress_to_fq6())
+                });
+
+            Self((combined_fq6.c0, combined_fq6.c1))
+        }
+    }
+
     #[inline]
     pub fn decompress_to_fq12(self) -> Fq12 {
         compressible_fq12_to_fq12(self.decompress())
     }
 
     #[inline]
-    pub fn decompress(self) -> CompressibleFq12 {
+    pub fn decompress_to_fq6(self) -> Fq6 {
         // https://eprint.iacr.org/2007/429.pdf p.10 equation (6)
         let c2 = (Fq2::from(3) * self.0 .0.square() + Fq6Config::NONRESIDUE)
             * (Fq2::from(3) * self.0 .1 * Fq6Config::NONRESIDUE)
                 .inverse()
                 .unwrap();
-        CompressibleFq12::torus_decompress(Fq6 {
+        Fq6 {
             c0: self.0 .0,
             c1: self.0 .1,
             c2,
-        })
+        }
+    }
+
+    #[inline]
+    pub fn decompress(self) -> CompressibleFq12 {
+        // https://eprint.iacr.org/2007/429.pdf p.10 equation (6)
+        let fq6 = self.decompress_to_fq6();
+        CompressibleFq12::torus_decompress(fq6)
     }
 }
 
