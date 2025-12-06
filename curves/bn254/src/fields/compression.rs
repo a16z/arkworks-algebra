@@ -134,6 +134,9 @@ pub fn torus_decompress_fq6(element: CompressedFq12) -> Fq6 {
 }
 
 pub fn torus_compress_psi_6_pow_to_two_fq2(element: CompressibleFq12) -> CompressedFq12 {
+    if element.c1 == Fq6::ZERO {
+        assert!(element.c0 != Fq6::ONE, "Element is 1!");
+    }
     assert!(
         element.c1 != Fq6::ZERO,
         "c1 cannot be zero for an element with norm 1."
