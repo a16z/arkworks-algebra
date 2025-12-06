@@ -100,6 +100,64 @@ pub fn mul_compressed_fq6(lhs: Fq6, rhs: Fq6) -> Fq6 {
     (lhs * rhs + nonresidue) / (lhs + rhs)
 }
 
+impl Field for CompressedFq12 {
+    type BasePrimeField = Fq;
+
+    const SQRT_PRECOMP: Option<ark_ff::SqrtPrecomputation<Self>>;
+
+    const ONE: Self;
+
+    fn extension_degree() -> u64 {
+        todo!()
+    }
+
+    fn to_base_prime_field_elements(&self) -> impl Iterator<Item = Self::BasePrimeField> {
+        todo!()
+    }
+
+    fn from_base_prime_field_elems(
+        elems: impl IntoIterator<Item = Self::BasePrimeField>,
+    ) -> Option<Self> {
+        todo!()
+    }
+
+    fn from_base_prime_field(elem: Self::BasePrimeField) -> Self {
+        todo!()
+    }
+
+    fn from_random_bytes_with_flags<F: ark_serialize::Flags>(bytes: &[u8]) -> Option<(Self, F)> {
+        todo!()
+    }
+
+    fn legendre(&self) -> ark_ff::LegendreSymbol {
+        todo!()
+    }
+
+    fn square(&self) -> Self {
+        todo!()
+    }
+
+    fn square_in_place(&mut self) -> &mut Self {
+        todo!()
+    }
+
+    fn inverse(&self) -> Option<Self> {
+        todo!()
+    }
+
+    fn inverse_in_place(&mut self) -> Option<&mut Self> {
+        todo!()
+    }
+
+    fn frobenius_map_in_place(&mut self, power: usize) {
+        todo!()
+    }
+
+    fn mul_by_base_prime_field(&self, elem: &Self::BasePrimeField) -> Self {
+        todo!()
+    }
+}
+
 impl CompressedFq12 {
     pub fn homomorphic_combine_pairing_values(elements: &[Self]) -> Self {
         assert!(
