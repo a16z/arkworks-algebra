@@ -1,11 +1,11 @@
 use crate::{Config, Fq, Fq12, Fq2, Fq6, Fq6Config};
 use ark_ec::bn::FromPsi6Pow;
+use ark_ff::vec::Vec;
 /// Implement the torus-based compression method in https://eprint.iacr.org/2007/429.pdf.
 /// This module contains relevant data structures such as compressible Fq12 and compressed Fq12
 /// and the relevant compression and conversion functions.
 use ark_ff::{AdditiveGroup, Field, Fp12, Fp12Config, Fp6Config, MontFp};
-use ark_ff::vec::Vec;
-use ark_serialize::{ CanonicalDeserialize, CanonicalSerialize};
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 
 pub type CompressibleFq12 = Fp12<CompressibleFq12Config>;
 
@@ -134,6 +134,10 @@ pub fn torus_decompress_fq6(element: CompressedFq12) -> Fq6 {
 }
 
 pub fn torus_compress_psi_6_pow_to_two_fq2(element: CompressibleFq12) -> CompressedFq12 {
+    assert!(
+        element.c1 != Fq6::ZERO,
+        "c1 cannot be zero for an element with norm 1."
+    );
     let c1 = element.c0 / element.c1;
     let c1_pow = -c1.pow(Q);
     let compressed_prod = CompressibleFq12::mul_torus_compressed_elements(c1_pow, c1);
