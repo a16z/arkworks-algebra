@@ -14,9 +14,11 @@ pub type CompressibleFq12 = Fp12<CompressibleFq12Config>;
 pub struct CompressedFq12(pub (Fq2, Fq2));
 
 impl Default for CompressedFq12 {
-    // Return a default compressed Fq12 in the case that the arguments to multi-pairing are empty. Note this default value is not the identity element of the group.
+    // TODO: perhaps more documentation and explanation needed.
+    // Return a default compressed Fq12 in the case that the arguments to multi-pairing are empty.
+    // This default value is in valid and represents the uncompressed element identity.
     fn default() -> Self {
-        CompressedFq12((Fq2::ZERO, Fq2::ONE))
+        CompressedFq12((-Fq2::ONE, Fq2::ONE))
     }
 }
 
@@ -127,6 +129,9 @@ impl CompressedFq12 {
 
     #[inline]
     pub fn decompress_to_fq6(self) -> Fq6 {
+        if self == CompressedFq12::default() {
+            return Fq6::ONE;
+        }
         // https://eprint.iacr.org/2007/429.pdf p.10 equation (6)
         let c2 = (Fq2::from(3) * self.0 .0.square() + Fq6Config::NONRESIDUE)
             * (Fq2::from(3) * self.0 .1 * Fq6Config::NONRESIDUE)
@@ -141,6 +146,9 @@ impl CompressedFq12 {
 
     #[inline]
     pub fn decompress(self) -> CompressibleFq12 {
+        if self == CompressedFq12::default() {
+            return CompressibleFq12::ONE;
+        }
         // https://eprint.iacr.org/2007/429.pdf p.10 equation (6)
         let fq6 = self.decompress_to_fq6();
         CompressibleFq12::torus_decompress(fq6)
@@ -167,7 +175,8 @@ pub fn torus_decompress_fq6(element: CompressedFq12) -> Fq6 {
 
 pub fn torus_compress_psi_6_pow_to_two_fq2(element: CompressibleFq12) -> CompressedFq12 {
     if element.c1 == Fq6::ZERO {
-        assert!(element.c0 != Fq6::ONE, "Element is 1!");
+        // element = identity
+        return CompressedFq12::default();
     }
     assert!(
         element.c1 != Fq6::ZERO,
@@ -182,7 +191,6 @@ pub fn torus_compress_psi_6_pow_to_two_fq2(element: CompressibleFq12) -> Compres
 #[inline]
 pub fn fq12_to_compressible_fq12(value: Fq12) -> CompressibleFq12 {
     // Divide by the generator of Fq6
-    assert!(value != Fq12::ONE, "Element is the identity!");
     let new_c1 = Fq6 {
         c0: value.c1.c1,
         c1: value.c1.c2,
