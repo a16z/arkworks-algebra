@@ -15,7 +15,7 @@ test_group!(g2_glv; G2Projective; glv);
 mod test {
     use ark_ec::pairing::{CompressedPairing, Pairing};
     use ark_ff::{AdditiveGroup, CyclotomicMultSubgroup, Field, UniformRand};
-    use ark_std::{test_rng, vec::Vec};
+    use ark_std::{rand::Rng, test_rng, vec::Vec};
 
     use crate::{
         compressible_fq12_to_fq12, fq12_to_compressible_fq12, mul_compressed_fq6,
@@ -321,6 +321,29 @@ mod test {
             expected = expected * CompressibleFq12::torus_decompress(arg2);
 
             assert_eq!(expected, CompressibleFq12::torus_decompress(result));
+        }
+    }
+
+    #[test]
+    fn test_pow_compressed_fq12() {
+        let num_trials = 20;
+        let mut rng = test_rng();
+
+        for _ in 0..num_trials {
+            let compressed_pairing_value = {
+                let g1 = G1Projective::rand(&mut rng);
+                let g2 = G2Projective::rand(&mut rng);
+
+                Bn254::compressed_pairing(g1, g2)
+            };
+            let uncompressed_pairing_value = compressed_pairing_value.decompress_to_fq12();
+
+            // Random [u64] exponent.
+            let exp: [u64; 10] = [(); 10].map(|_| rng.gen::<u64>());
+
+            let compressed_result = compressed_pairing_value.pow(exp);
+            let uncompressed_result = uncompressed_pairing_value.pow(exp);
+            assert_eq!(compressed_result.decompress_to_fq12(), uncompressed_result);
         }
     }
 }

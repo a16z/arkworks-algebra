@@ -4,7 +4,7 @@ use ark_ff::vec::Vec;
 /// Implement the torus-based compression method in https://eprint.iacr.org/2007/429.pdf.
 /// This module contains relevant data structures such as compressible Fq12 and compressed Fq12
 /// and the relevant compression and conversion functions.
-use ark_ff::{AdditiveGroup, Field, Fp12, Fp12Config, Fp6Config, MontFp};
+use ark_ff::{AdditiveGroup, BitIteratorBE, Field, Fp12, Fp12Config, Fp6Config, MontFp};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 
 pub type CompressibleFq12 = Fp12<CompressibleFq12Config>;
@@ -103,6 +103,42 @@ pub fn mul_compressed_fq6(lhs: Fq6, rhs: Fq6) -> Fq6 {
 }
 
 impl CompressedFq12 {
+    pub fn pow<S: AsRef<[u64]>>(&self, exp: S) -> Self {
+        let mut res: Option<Self> = None;
+
+        for i in BitIteratorBE::without_leading_zeros(exp) {
+            if let Some(res_val) = res.as_mut() {
+                res_val.square_in_place();
+            }
+
+            if i {
+                match res.as_mut() {
+                    Some(res) => {
+                        *res = Self::mul_compressed(*res, *self);
+                    },
+                    None => {
+                        res = Some(*self);
+                    },
+                }
+            }
+        }
+
+        // If res is None, return the default element that corresponds to the identity.
+        res.unwrap_or_else(|| Self::default())
+    }
+
+    pub fn square_in_place(&mut self) -> &mut Self {
+        *self = Self::mul_compressed(*self, *self);
+        self
+    }
+
+    pub fn mul_compressed(lhs: Self, rhs: Self) -> Self {
+        let lhs_fq6 = lhs.decompress_to_fq6();
+        let rhs_fq6 = rhs.decompress_to_fq6();
+        let result_fq6 = mul_compressed_fq6(lhs_fq6, rhs_fq6);
+        Self((result_fq6.c0, result_fq6.c1))
+    }
+
     pub fn homomorphic_combine_pairing_values(elements: &[Self]) -> Self {
         assert!(
             !elements.is_empty(),

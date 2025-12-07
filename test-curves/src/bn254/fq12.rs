@@ -1,6 +1,6 @@
 use ark_ec::bn::FromPsi6Pow;
 use ark_ff::vec::Vec;
-use ark_ff::{AdditiveGroup, Field, Fp12, Fp12Config, Fp6Config, MontFp};
+use ark_ff::{AdditiveGroup, BitIteratorBE, Field, Fp12, Fp12Config, Fp6Config, MontFp};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 
 use crate::bn254::{Config, Fq, Fq2, Fq6, Fq6Config};
@@ -20,7 +20,7 @@ static Q: [u64; 8] = [
 ];
 
 // https://eprint.iacr.org/2007/429.pdf Proposition 1
-#[derive(Clone, Copy, CanonicalSerialize, CanonicalDeserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, CanonicalSerialize, CanonicalDeserialize)]
 pub struct CompressedFq12(pub (Fq2, Fq2));
 
 #[inline]
@@ -145,7 +145,52 @@ pub fn mul_compressed_fq6(lhs: Fq6, rhs: Fq6) -> Fq6 {
     (lhs * rhs + nonresidue) / (lhs + rhs)
 }
 
+impl Default for CompressedFq12 {
+    // TODO: perhaps more documentation and explanation needed.
+    // Return a default compressed Fq12 in the case that the arguments to multi-pairing are empty.
+    // This default value is in valid and represents the uncompressed element identity.
+    fn default() -> Self {
+        CompressedFq12((-Fq2::ONE, Fq2::ONE))
+    }
+}
+
 impl CompressedFq12 {
+    pub fn pow<S: AsRef<[u64]>>(&self, exp: S) -> Self {
+        let mut res: Option<Self> = None;
+
+        for i in BitIteratorBE::without_leading_zeros(exp) {
+            if let Some(res_val) = res.as_mut() {
+                res_val.square_in_place();
+            }
+
+            if i {
+                match res.as_mut() {
+                    Some(res) => {
+                        *res = Self::mul_compressed(*res, *self);
+                    },
+                    None => {
+                        res = Some(*self);
+                    },
+                }
+            }
+        }
+
+        // If res is None, return the default element that corresponds to the identity.
+        res.unwrap_or_else(|| Self::default())
+    }
+
+    pub fn square_in_place(&mut self) -> &mut Self {
+        *self = Self::mul_compressed(*self, *self);
+        self
+    }
+
+    pub fn mul_compressed(lhs: Self, rhs: Self) -> Self {
+        let lhs_fq6 = lhs.decompress_to_fq6();
+        let rhs_fq6 = rhs.decompress_to_fq6();
+        let result_fq6 = mul_compressed_fq6(lhs_fq6, rhs_fq6);
+        Self((result_fq6.c0, result_fq6.c1))
+    }
+
     pub fn homomorphic_combine_pairing_values(elements: &[Self]) -> Self {
         assert!(
             !elements.is_empty(),

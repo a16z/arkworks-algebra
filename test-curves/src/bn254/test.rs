@@ -55,7 +55,7 @@ mod test {
     use ark_ff::{
         AdditiveGroup, CyclotomicMultSubgroup, Field, Fp12Config, Fp6Config, MontFp, UniformRand,
     };
-    use ark_std::{test_rng, vec::Vec};
+    use ark_std::{rand::Rng, test_rng, vec::Vec};
 
     use crate::bn254::{
         compressible_fq12_to_fq12, fq12_to_compressible_fq12, mul_compressed_fq6,
@@ -347,6 +347,55 @@ mod test {
             expected = expected * CompressibleFq12::torus_decompress(arg2);
 
             assert_eq!(expected, CompressibleFq12::torus_decompress(result));
+        }
+    }
+
+    #[test]
+    fn test_mul_compressed_fq12() {
+        let num_trials = 10;
+        let mut rng = test_rng();
+
+        for _ in 0..num_trials {
+            // Test the results agree with homomorphic combining an array of values.
+            let compressed_pairing_values: Vec<CompressedFq12> = (0..5)
+                .map(|_| {
+                    let g1 = G1Projective::rand(&mut rng);
+                    let g2 = G2Projective::rand(&mut rng);
+
+                    Bn254::compressed_pairing(g1, g2)
+                })
+                .collect();
+            let result =
+                CompressedFq12::homomorphic_combine_pairing_values(&compressed_pairing_values);
+            let expected = compressed_pairing_values[1..]
+                .iter()
+                .fold(compressed_pairing_values[0], |acc, e| {
+                    CompressedFq12::mul_compressed(acc, *e)
+                });
+            assert_eq!(result, expected);
+        }
+    }
+
+    #[test]
+    fn test_pow_compressed_fq12() {
+        let num_trials = 20;
+        let mut rng = test_rng();
+
+        for _ in 0..num_trials {
+            let compressed_pairing_value = {
+                let g1 = G1Projective::rand(&mut rng);
+                let g2 = G2Projective::rand(&mut rng);
+
+                Bn254::compressed_pairing(g1, g2)
+            };
+            let uncompressed_pairing_value = compressed_pairing_value.decompress_to_fq12();
+
+            // Random [u64] exponent.
+            let exp: [u64; 10] = [(); 10].map(|_| rng.gen::<u64>());
+
+            let compressed_result = compressed_pairing_value.pow(exp);
+            let uncompressed_result = uncompressed_pairing_value.pow(exp);
+            assert_eq!(compressed_result.decompress_to_fq12(), uncompressed_result);
         }
     }
 }
