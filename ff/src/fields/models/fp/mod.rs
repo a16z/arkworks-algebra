@@ -2,7 +2,10 @@ use crate::{
     AdditiveGroup, BigInt, BigInteger, FftField, Field, LegendreSymbol, One, PrimeField,
     SqrtPrecomputation, Zero,
 };
+
+#[cfg(feature = "default")]
 use allocative::Allocative;
+
 use ark_serialize::{
     buffer_byte_size, CanonicalDeserialize, CanonicalDeserializeWithFlags, CanonicalSerialize,
     CanonicalSerializeWithFlags, Compress, EmptyFlags, Flags, SerializationError, Valid, Validate,
@@ -124,6 +127,7 @@ pub struct Fp<P: FpConfig<N>, const N: usize>(
     #[doc(hidden)] pub PhantomData<P>,
 );
 
+#[cfg(feature = "default")]
 impl<P: FpConfig<N>, const N: usize> Allocative for Fp<P, N> {
     fn visit<'a, 'b: 'a>(&self, _visitor: &'a mut allocative::Visitor<'b>) {}
 }
@@ -706,7 +710,6 @@ impl<P: FpConfig<N>, const N: usize> Display for Fp<P, N> {
 impl<P: FpConfig<N>, const N: usize> Neg for Fp<P, N> {
     type Output = Self;
     #[inline]
-    #[must_use]
     fn neg(mut self) -> Self {
         P::neg_in_place(&mut self);
         self

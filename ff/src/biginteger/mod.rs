@@ -2,7 +2,10 @@ use crate::{
     bits::{BitIteratorBE, BitIteratorLE},
     const_for, UniformRand,
 };
+
+#[cfg(feature = "default")]
 use allocative::Allocative;
+
 #[allow(unused)]
 use ark_ff_macros::unroll_for_loops;
 use ark_serialize::{
@@ -37,7 +40,8 @@ pub use signed::{SignedBigInt, S128, S192, S256, S64};
 pub mod signed_hi_32;
 pub use signed_hi_32::{SignedBigIntHi32, S160, S224, S96};
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Zeroize, Allocative)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Zeroize)]
+#[cfg_attr(feature = "default", derive(Allocative))]
 pub struct BigInt<const N: usize>(pub [u64; N]);
 
 impl<const N: usize> Default for BigInt<N> {
