@@ -1,11 +1,11 @@
 use crate::{Config, Fq, Fq12, Fq2, Fq6, Fq6Config};
 use ark_ec::bn::FromPsi6Pow;
+use ark_ff::vec::Vec;
 /// Implement the torus-based compression method in https://eprint.iacr.org/2007/429.pdf.
 /// This module contains relevant data structures such as compressible Fq12 and compressed Fq12
 /// and the relevant compression and conversion functions.
-use ark_ff::{AdditiveGroup, Field, Fp12, Fp12Config, Fp6Config, MontFp};
-use ark_ff::vec::Vec;
-use ark_serialize::{ CanonicalDeserialize, CanonicalSerialize};
+use ark_ff::{AdditiveGroup, BitIteratorBE, Field, Fp12, Fp12Config, Fp6Config, MontFp};
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 
 pub type CompressibleFq12 = Fp12<CompressibleFq12Config>;
 
@@ -14,9 +14,11 @@ pub type CompressibleFq12 = Fp12<CompressibleFq12Config>;
 pub struct CompressedFq12(pub (Fq2, Fq2));
 
 impl Default for CompressedFq12 {
-    // Return a default compressed Fq12 in the case that the arguments to multi-pairing are empty. Note this default value is not the identity element of the group.
+    // TODO: perhaps more documentation and explanation needed.
+    // Return a default compressed Fq12 in the case that the arguments to multi-pairing are empty.
+    // This default value is in valid and represents the uncompressed element identity.
     fn default() -> Self {
-        CompressedFq12((Fq2::ZERO, Fq2::ONE))
+        CompressedFq12((-Fq2::ONE, Fq2::ONE))
     }
 }
 
@@ -94,24 +96,98 @@ impl FromPsi6Pow<Config> for CompressedFq12 {
     }
 }
 
+pub fn mul_compressed_fq6(lhs: Fq6, rhs: Fq6) -> Fq6 {
+    let nonresidue = Fq6::new(Fq6Config::NONRESIDUE, Fq2::ZERO, Fq2::ZERO);
+
+    (lhs * rhs + nonresidue) / (lhs + rhs)
+}
+
 impl CompressedFq12 {
+    pub fn pow<S: AsRef<[u64]>>(&self, exp: S) -> Self {
+        let mut res: Option<Self> = None;
+
+        for i in BitIteratorBE::without_leading_zeros(exp) {
+            if let Some(res_val) = res.as_mut() {
+                res_val.square_in_place();
+            }
+
+            if i {
+                match res.as_mut() {
+                    Some(res) => {
+                        *res = Self::mul_compressed(*res, *self);
+                    },
+                    None => {
+                        res = Some(*self);
+                    },
+                }
+            }
+        }
+
+        // If res is None, return the default element that corresponds to the identity.
+        res.unwrap_or_else(|| Self::default())
+    }
+
+    pub fn square_in_place(&mut self) -> &mut Self {
+        *self = Self::mul_compressed(*self, *self);
+        self
+    }
+
+    pub fn mul_compressed(lhs: Self, rhs: Self) -> Self {
+        let lhs_fq6 = lhs.decompress_to_fq6();
+        let rhs_fq6 = rhs.decompress_to_fq6();
+        let result_fq6 = mul_compressed_fq6(lhs_fq6, rhs_fq6);
+        Self((result_fq6.c0, result_fq6.c1))
+    }
+
+    pub fn homomorphic_combine_pairing_values(elements: &[Self]) -> Self {
+        assert!(
+            !elements.is_empty(),
+            "Cannot combine an empty array of compressed Fq12 elements."
+        );
+        if elements.len() == 1 {
+            return elements[0];
+        } else {
+            // Note we cannot simply just fold the elements together with 1 since Fq6::ONE does not represent a valid compressed Fq6 element.
+            let combined_fq6 = elements[1..]
+                .iter()
+                .fold(elements[0].decompress_to_fq6(), |acc, e| {
+                    mul_compressed_fq6(acc, e.decompress_to_fq6())
+                });
+
+            Self((combined_fq6.c0, combined_fq6.c1))
+        }
+    }
+
     #[inline]
     pub fn decompress_to_fq12(self) -> Fq12 {
         compressible_fq12_to_fq12(self.decompress())
     }
 
     #[inline]
-    pub fn decompress(self) -> CompressibleFq12 {
+    pub fn decompress_to_fq6(self) -> Fq6 {
+        if self == CompressedFq12::default() {
+            return Fq6::ONE;
+        }
         // https://eprint.iacr.org/2007/429.pdf p.10 equation (6)
         let c2 = (Fq2::from(3) * self.0 .0.square() + Fq6Config::NONRESIDUE)
             * (Fq2::from(3) * self.0 .1 * Fq6Config::NONRESIDUE)
                 .inverse()
                 .unwrap();
-        CompressibleFq12::torus_decompress(Fq6 {
+        Fq6 {
             c0: self.0 .0,
             c1: self.0 .1,
             c2,
-        })
+        }
+    }
+
+    #[inline]
+    pub fn decompress(self) -> CompressibleFq12 {
+        if self == CompressedFq12::default() {
+            return CompressibleFq12::ONE;
+        }
+        // https://eprint.iacr.org/2007/429.pdf p.10 equation (6)
+        let fq6 = self.decompress_to_fq6();
+        CompressibleFq12::torus_decompress(fq6)
     }
 }
 
@@ -134,6 +210,14 @@ pub fn torus_decompress_fq6(element: CompressedFq12) -> Fq6 {
 }
 
 pub fn torus_compress_psi_6_pow_to_two_fq2(element: CompressibleFq12) -> CompressedFq12 {
+    if element.c1 == Fq6::ZERO {
+        // element = identity
+        return CompressedFq12::default();
+    }
+    assert!(
+        element.c1 != Fq6::ZERO,
+        "c1 cannot be zero for an element with norm 1."
+    );
     let c1 = element.c0 / element.c1;
     let c1_pow = -c1.pow(Q);
     let compressed_prod = CompressibleFq12::mul_torus_compressed_elements(c1_pow, c1);

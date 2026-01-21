@@ -15,12 +15,12 @@ test_group!(g2_glv; G2Projective; glv);
 mod test {
     use ark_ec::pairing::{CompressedPairing, Pairing};
     use ark_ff::{AdditiveGroup, CyclotomicMultSubgroup, Field, UniformRand};
-    use ark_std::{test_rng, vec::Vec};
+    use ark_std::{rand::Rng, test_rng, vec::Vec};
 
     use crate::{
-        compressible_fq12_to_fq12, fq12_to_compressible_fq12, torus_compress_fq6,
-        torus_compress_psi_6_pow_to_two_fq2, torus_decompress_fq6, Bn254, CompressibleFq12, Fq12,
-        Fq2, Fq6, G1Projective, G2Projective,
+        compressible_fq12_to_fq12, fq12_to_compressible_fq12, mul_compressed_fq6,
+        torus_compress_fq6, torus_compress_psi_6_pow_to_two_fq2, torus_decompress_fq6, Bn254,
+        CompressedFq12, CompressibleFq12, Fq12, Fq2, Fq6, G1Projective, G2Projective,
     };
 
     const PSI_6: [u64; 32] = [
@@ -189,12 +189,18 @@ mod test {
         let mut rng = test_rng();
 
         // Test pairing e2e.
-        for _ in 0..num_trials {
+        let mut successful_trials = 0;
+        while successful_trials < num_trials {
             let g1 = G1Projective::rand(&mut rng);
             let g2 = G2Projective::rand(&mut rng);
             let pairing_value = Bn254::pairing(g1, g2).0;
+            // Skip identity elements as they cannot be compressed
+            if pairing_value == Fq12::ONE {
+                continue;
+            }
             let compressed_pairing_value = Bn254::compressed_pairing(g1, g2);
             assert_eq!(pairing_value, compressed_pairing_value.decompress_to_fq12());
+            successful_trials += 1;
         }
 
         // Test multi-pairing e2e.
@@ -207,6 +213,10 @@ mod test {
                 .map(|_| G2Projective::rand(&mut rng))
                 .collect::<Vec<_>>();
             let pairing_value = Bn254::multi_pairing(g1.iter().cloned(), g2.iter().cloned()).0;
+            // Skip identity elements as they cannot be compressed
+            if pairing_value == Fq12::ONE {
+                continue;
+            }
             let compressed_pairing_value =
                 Bn254::compressed_multi_pairing(g1.iter().cloned(), g2.iter().cloned());
             assert_eq!(pairing_value, compressed_pairing_value.decompress_to_fq12());
@@ -230,6 +240,110 @@ mod test {
                 miller_loop_output.cyclotomic_exp(PSI_6),
                 miller_loop_output.pow(PSI_6)
             );
+        }
+    }
+
+    #[test]
+    fn test_homomorphic_combine() {
+        let num_trials = 10;
+        let mut rng = test_rng();
+
+        for _ in 0..num_trials {
+            // Generate an array of random pairing values
+            let compressed_pairing_values: Vec<CompressedFq12> = (0..5)
+                .map(|_| {
+                    let g1 = G1Projective::rand(&mut rng);
+                    let g2 = G2Projective::rand(&mut rng);
+
+                    Bn254::compressed_pairing(g1, g2)
+                })
+                .collect();
+
+            let pairing_values: Vec<Fq12> = compressed_pairing_values
+                .iter()
+                .map(|e| e.decompress_to_fq12())
+                .collect::<Vec<_>>();
+
+            let compressed_prod =
+                CompressedFq12::homomorphic_combine_pairing_values(&compressed_pairing_values);
+            let prod = pairing_values.iter().fold(Fq12::ONE, |acc, e| acc * e);
+
+            assert_eq!(compressed_prod.decompress_to_fq12(), prod);
+        }
+    }
+
+    #[test]
+    fn test_homomorphic_mul_fq6() {
+        let num_trials = 10;
+        let mut rng = test_rng();
+
+        for _ in 0..num_trials {
+            // Test multiplication of two elements.
+            let lhs = Fq6::rand(&mut rng);
+            let rhs = Fq6::rand(&mut rng);
+            let result = mul_compressed_fq6(lhs, rhs);
+            let expected =
+                CompressibleFq12::torus_decompress(lhs) * CompressibleFq12::torus_decompress(rhs);
+            assert_eq!(CompressibleFq12::torus_decompress(result), expected);
+        }
+
+        for _ in 0..num_trials {
+            // Test multiplication of two elements, where the first is one.
+            let lhs = Fq6::ONE;
+            let rhs = Fq6::rand(&mut rng);
+            let result = mul_compressed_fq6(lhs, rhs);
+            let expected =
+                CompressibleFq12::torus_decompress(lhs) * CompressibleFq12::torus_decompress(rhs);
+            assert_eq!(CompressibleFq12::torus_decompress(result), expected);
+        }
+
+        for _ in 0..num_trials {
+            // Test multiplication of two elements from compressed fq12.
+            let lhs = CompressedFq12((Fq2::rand(&mut rng), Fq2::rand(&mut rng)));
+            let rhs = CompressedFq12((Fq2::rand(&mut rng), Fq2::rand(&mut rng)));
+            let result = mul_compressed_fq6(lhs.decompress_to_fq6(), rhs.decompress_to_fq6());
+            let expected = CompressibleFq12::torus_decompress(lhs.decompress_to_fq6())
+                * CompressibleFq12::torus_decompress(rhs.decompress_to_fq6());
+            assert_eq!(CompressibleFq12::torus_decompress(result), expected);
+        }
+
+        for _ in 0..num_trials {
+            // Test multiplication of three elements.
+            let arg0 = Fq6::rand(&mut rng);
+            let arg1 = Fq6::rand(&mut rng);
+            let arg2 = Fq6::rand(&mut rng);
+
+            let mut result = mul_compressed_fq6(arg0, arg1);
+            result = mul_compressed_fq6(result, arg2);
+
+            let mut expected =
+                CompressibleFq12::torus_decompress(arg0) * CompressibleFq12::torus_decompress(arg1);
+            expected = expected * CompressibleFq12::torus_decompress(arg2);
+
+            assert_eq!(expected, CompressibleFq12::torus_decompress(result));
+        }
+    }
+
+    #[test]
+    fn test_pow_compressed_fq12() {
+        let num_trials = 20;
+        let mut rng = test_rng();
+
+        for _ in 0..num_trials {
+            let compressed_pairing_value = {
+                let g1 = G1Projective::rand(&mut rng);
+                let g2 = G2Projective::rand(&mut rng);
+
+                Bn254::compressed_pairing(g1, g2)
+            };
+            let uncompressed_pairing_value = compressed_pairing_value.decompress_to_fq12();
+
+            // Random [u64] exponent.
+            let exp: [u64; 10] = [(); 10].map(|_| rng.gen::<u64>());
+
+            let compressed_result = compressed_pairing_value.pow(exp);
+            let uncompressed_result = uncompressed_pairing_value.pow(exp);
+            assert_eq!(compressed_result.decompress_to_fq12(), uncompressed_result);
         }
     }
 }
