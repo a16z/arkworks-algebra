@@ -74,6 +74,8 @@ impl PrecomputedShamir2Table {
     pub fn new(bases: &[G1Projective; 2]) -> Self {
         let mut table = [G1Projective::zero(); 16];
 
+        // Sequential - only 16 elements, parallelism overhead not worth it
+        // and this is called from outer par_iter loops
         table.par_iter_mut().enumerate().for_each(|(idx, point)| {
             let point_mask = idx & 0x3; // Which points to include
             let sign_mask = idx >> 2; // Which points to negate

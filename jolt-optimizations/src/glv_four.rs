@@ -82,6 +82,8 @@ impl PrecomputedShamir4Table {
     pub fn new(bases: &[G2Projective; 4]) -> Self {
         let mut table = vec![G2Projective::zero(); 256];
 
+        // Sequential - only 256 elements, parallelism overhead not worth it
+        // and this is called from outer par_iter loops
         table.par_iter_mut().enumerate().for_each(|(idx, point)| {
             let point_mask = idx & 0xF; // Which points to include
             let sign_mask = idx >> 4; // Which points to negate

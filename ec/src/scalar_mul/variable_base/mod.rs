@@ -846,21 +846,13 @@ fn msm_bigint_wnaf<V: VariableBaseMSM>(
     bases = &bases[..size];
     scalars = &scalars[..size];
 
+    // Use flat parallelism - outer cfg_chunks provides parallelism,
+    // inner function uses parallel iterators from the same thread pool.
+    // Nested threadpool creation (ThreadPoolBuilder::new().install) was removed
+    // as it causes thread oversubscription and is expensive.
     cfg_chunks!(bases, chunk_size)
         .zip(cfg_chunks!(scalars, chunk_size))
-        .map(|(bases, scalars)| {
-            #[cfg(feature = "parallel")]
-            let result = rayon::ThreadPoolBuilder::new()
-                .num_threads(THREADS_PER_CHUNK.min(rayon::current_num_threads()))
-                .build()
-                .unwrap()
-                .install(|| msm_bigint_wnaf_parallel::<V>(bases, scalars));
-
-            #[cfg(not(feature = "parallel"))]
-            let result = msm_bigint_wnaf_parallel::<V>(bases, scalars);
-
-            result
-        })
+        .map(|(bases, scalars)| msm_bigint_wnaf_parallel::<V>(bases, scalars))
         .sum()
 }
 
