@@ -21,20 +21,9 @@ pub const fn adc(a: &mut u64, b: u64, carry: u64) -> u64 {
 #[inline(always)]
 #[doc(hidden)]
 pub fn adc_for_add_with_carry(a: &mut u64, b: u64, carry: u8) -> u8 {
-    #[cfg(all(target_arch = "x86_64", feature = "asm"))]
-    {
-        use core::arch::x86_64::_addcarry_u64;
-        #[allow(unused_unsafe)]
-        unsafe {
-            _addcarry_u64(carry, *a, b, a)
-        }
-    }
-    #[cfg(not(all(target_arch = "x86_64", feature = "asm")))]
-    {
-        let tmp = *a as u128 + b as u128 + carry as u128;
-        *a = tmp as u64;
-        (tmp >> 64) as u8
-    }
+    let tmp = *a as u128 + b as u128 + carry as u128;
+    *a = tmp as u64;
+    (tmp >> 64) as u8
 }
 
 /// Calculate a + b + carry, returning the sum
@@ -66,20 +55,9 @@ pub(crate) const fn sbb(a: &mut u64, b: u64, borrow: u64) -> u64 {
 #[inline(always)]
 #[doc(hidden)]
 pub fn sbb_for_sub_with_borrow(a: &mut u64, b: u64, borrow: u8) -> u8 {
-    #[cfg(all(target_arch = "x86_64", feature = "asm"))]
-    {
-        use core::arch::x86_64::_subborrow_u64;
-        #[allow(unused_unsafe)]
-        unsafe {
-            _subborrow_u64(borrow, *a, b, a)
-        }
-    }
-    #[cfg(not(all(target_arch = "x86_64", feature = "asm")))]
-    {
-        let tmp = (1u128 << 64) + (*a as u128) - (b as u128) - (borrow as u128);
-        *a = tmp as u64;
-        u8::from(tmp >> 64 == 0)
-    }
+    let tmp = (1u128 << 64) + (*a as u128) - (b as u128) - (borrow as u128);
+    *a = tmp as u64;
+    u8::from(tmp >> 64 == 0)
 }
 
 #[inline(always)]
