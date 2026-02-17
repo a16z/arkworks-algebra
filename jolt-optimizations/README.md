@@ -7,6 +7,7 @@ Optimized scalar multiplication for BN254 using GLV endomorphisms and various pr
 **SageMath must be installed** as the build process uses Sage scripts to generate lookup tables.
 
 Install SageMath:
+
 - macOS: `brew install sage`
 - Ubuntu/Debian: `sudo apt-get install sagemath`
 - Or download from [sagemath.org](https://www.sagemath.org/)
