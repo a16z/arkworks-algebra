@@ -4,6 +4,8 @@ pub use ark_ff::{self, fields::models::*, FftField, Field, LegendreSymbol, MontF
 
 pub use ark_ec::{self, *};
 
+pub use ark_ff_macros::unroll_for_loops;
+
 #[cfg(any(feature = "bls12_381_scalar_field", feature = "bls12_381_curve"))]
 pub mod bls12_381;
 
@@ -29,5 +31,8 @@ pub mod bn384_small_two_adicity;
 
 #[cfg(feature = "secp256k1")]
 pub mod secp256k1;
+
+#[cfg(feature = "bn254")]
+pub mod bn254;
 
 pub mod fp128;

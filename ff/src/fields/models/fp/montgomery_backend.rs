@@ -5,6 +5,8 @@ use crate::{
 use ark_ff_macros::unroll_for_loops;
 use ark_std::marker::PhantomData;
 
+pub const PRECOMP_TABLE_SIZE: usize = 1 << 14;
+
 /// A trait that specifies the constants and arithmetic procedures
 /// for Montgomery arithmetic over the prime field defined by `MODULUS`.
 ///
@@ -47,7 +49,7 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
     /// (a) `Self::MODULUS[N-1] < u64::MAX >> 2`, and
     /// (b) the bits of the modulus are not all 1.
     #[doc(hidden)]
-    const CAN_USE_NO_CARRY_SQUARE_OPT: bool = can_use_no_carry_mul_optimization::<Self, N>();
+    const CAN_USE_NO_CARRY_SQUARE_OPT: bool = can_use_no_carry_square_optimization::<Self, N>();
 
     /// Does the modulus have a spare unused bit
     ///
@@ -76,6 +78,10 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
     /// The default is to use the standard Tonelli-Shanks algorithm.
     const SQRT_PRECOMP: Option<SqrtPrecomputation<Fp<MontBackend<Self, N>, N>>> =
         sqrt_precomputation();
+
+    #[allow(long_running_const_eval)]
+    const SMALL_ELEMENT_MONTGOMERY_PRECOMP: [Fp<MontBackend<Self, N>, N>; PRECOMP_TABLE_SIZE] =
+        small_element_montgomery_precomputation::<N, Self>();
 
     /// (MODULUS + 1) / 4 when MODULUS % 4 == 3. Used for square root precomputations.
     #[doc(hidden)]
@@ -110,7 +116,6 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
             false => None,
         }
     };
-
     /// (MODULUS - 1) / 4 when MODULUS % 8 == 5. Used for square root precomputations.
     #[doc(hidden)]
     const MODULUS_MINUS_ONE_DIV_FOUR: Option<BigInt<N>> = {
@@ -122,6 +127,75 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
             },
             false => None,
         }
+    };
+
+    /// Number of spare bits (i.e. significant bits equal to 0) in the modulus `p`
+    #[doc(hidden)]
+    const MODULUS_NUM_SPARE_BITS: u32 = Self::MODULUS.num_spare_bits();
+
+    /// Represents the modulus `p` as an N+1 limb number `(low_n_limbs, high_limb)` with the highest limb being 0.
+    #[doc(hidden)]
+    const MODULUS_NPLUS1: ([u64; N], u64) = {
+        // The highest limb (hi[N-1]) remains 0.
+        (Self::MODULUS.0, 0u64)
+    };
+
+    /// Represents `2*p` as an N+1 limb number `(low_n_limbs, high_limb)`.
+    #[doc(hidden)]
+    const MODULUS_TIMES_2_NPLUS1: ([u64; N], u64) = {
+        let (mod2_arr, mod2_carry) = Self::MODULUS.const_mul2_with_carry();
+        // The highest limb is the carry bit
+        (mod2_arr.0, mod2_carry as u64)
+    };
+
+    /// Represents `3*p` as an N+1 limb number `(low_n_limbs, high_limb)`.
+    #[doc(hidden)]
+    const MODULUS_TIMES_3_NPLUS1: ([u64; N], u64) = {
+        // Add MODULUS_NPLUS1 and MODULUS_TIMES_2_NPLUS1 using the new format.
+        let (a_lo, a_hi) = Self::MODULUS_NPLUS1;
+        let (b_lo, b_hi) = Self::MODULUS_TIMES_2_NPLUS1;
+        let mut sum_lo = [0u64; N];
+        let mut carry = 0u64;
+
+        // Const addition loop
+        let mut i = 0;
+        while i < N {
+            let tmp = (a_lo[i] as u128) + (b_lo[i] as u128) + (carry as u128);
+            sum_lo[i] = tmp as u64;
+            carry = (tmp >> 64) as u64;
+            i += 1;
+        }
+
+        let sum_hi = a_hi + b_hi + carry; // Add high limbs and final carry
+        (sum_lo, sum_hi)
+    };
+
+    /// Barrett reduction constant: $R' = 2^{\text{MODULUS_BITS}}$.
+    #[doc(hidden)]
+    const BARRETT_RPRIME: (BigInt<N>, bool) = {
+        let num_spare_bits = Self::MODULUS.num_spare_bits();
+        assert!(num_spare_bits <= 64);
+        if num_spare_bits == 0 {
+            (BigInt::<N>::zero(), true)
+        } else {
+            (BigInt::<N>::pow_2(64 - num_spare_bits), false)
+        }
+    };
+
+    /// Barrett reduction constant: mu = floor( r * R' / (2 * MODULUS) )
+    /// = floor( 2^(64 * (N + 1) - num_spare_bits(MODULUS) - 1) / MODULUS )
+    #[doc(hidden)]
+    const BARRETT_MU: u64 = {
+        // Compute Barrett mu = floor(2^(modulus_bits + 63) / modulus)
+        assert!(Self::MODULUS.num_spare_bits() < 64);
+        let r_times_r_prime_over_2 = crate::const_helpers::RBuffer::<N>(
+            [0u64; N],
+            1 << (63 - Self::MODULUS.num_spare_bits()),
+        );
+        // Use const_quotient! to compute the quotient
+        let result: BigInt<N> = const_quotient!(r_times_r_prime_over_2, &Self::MODULUS);
+        // Result should be a u64
+        result.0[0]
     };
 
     /// Sets `a = a + b`.
@@ -377,6 +451,43 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
         }
     }
 
+    fn from_i128<const NPLUS1: usize, const NPLUS2: usize>(
+        r: i128,
+    ) -> Option<Fp<MontBackend<Self, N>, N>> {
+        // TODO: small table for signed values?
+        Some(Fp::new_unchecked(Self::R).mul_i128::<NPLUS1, NPLUS2>(r))
+    }
+
+    fn from_u128<const NPLUS1: usize, const NPLUS2: usize>(
+        r: u128,
+    ) -> Option<Fp<MontBackend<Self, N>, N>> {
+        if r < PRECOMP_TABLE_SIZE as u128 {
+            Some(Self::SMALL_ELEMENT_MONTGOMERY_PRECOMP[r as usize])
+        } else {
+            // Multiply R (one in Montgomery form) with the u128
+            Some(Fp::new_unchecked(Self::R).mul_u128::<NPLUS1, NPLUS2>(r))
+        }
+    }
+
+    fn from_i64<const NPLUS1: usize>(r: i64) -> Option<Fp<MontBackend<Self, N>, N>> {
+        // TODO: small table for signed values?
+        Some(Fp::new_unchecked(Self::R).mul_i64::<NPLUS1>(r))
+    }
+
+    fn from_u64<const NPLUS1: usize>(r: u64) -> Option<Fp<MontBackend<Self, N>, N>> {
+        debug_assert!(NPLUS1 == N + 1);
+        if r < PRECOMP_TABLE_SIZE as u64 {
+            Some(Self::SMALL_ELEMENT_MONTGOMERY_PRECOMP[r as usize])
+        } else {
+            // Multiply R (one in Montgomery form) with the u64
+            Some(Fp::new_unchecked(Self::R).mul_u64::<NPLUS1>(r))
+        }
+    }
+
+    fn from_bigint_unchecked(r: BigInt<N>) -> Option<Fp<MontBackend<Self, N>, N>> {
+        Some(Fp::new_unchecked(r))
+    }
+
     fn from_bigint(r: BigInt<N>) -> Option<Fp<MontBackend<Self, N>, N>> {
         let mut r = Fp::new_unchecked(r);
         if r.is_zero() {
@@ -386,6 +497,55 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
         } else {
             r *= &Fp::new_unchecked(Self::R2);
             Some(r)
+        }
+    }
+
+    /// Construct from a smaller-width BigInt<M> by zero-extending into N limbs.
+    /// Returns None if the resulting N-limb value is >= modulus.
+    #[inline]
+    fn from_bigint_mixed<const M: usize>(r: BigInt<M>) -> Fp<MontBackend<Self, N>, N> {
+        debug_assert!(M <= N, "from_bigint_mixed requires M <= N");
+        let r_n = BigInt::<N>::zero_extend_from::<M>(&r);
+        Self::from_bigint(r_n).expect("from_bigint_mixed: value >= modulus")
+    }
+
+    /// Construct from a signed big integer with M 64-bit limbs (sign-magnitude).
+    /// Returns None if |x| >= modulus.
+    #[inline]
+    fn from_signed_bigint<const M: usize>(
+        x: crate::biginteger::SignedBigInt<M>,
+    ) -> Fp<MontBackend<Self, N>, N> {
+        // if x.is_zero() {
+        //     return Fp::zero();
+        // }
+        let fe = Self::from_bigint_mixed::<M>(x.magnitude);
+        if x.is_positive {
+            fe
+        } else {
+            -fe
+        }
+    }
+
+    /// Construct from a signed big integer with high 32-bit tail and K low 64-bit limbs.
+    /// KPLUS1 must be K+1; the magnitude packs as [lo[0..K], hi32 as u64].
+    /// Returns None if |x| >= modulus.
+    #[inline]
+    fn from_signed_bigint_hi32<const K: usize, const KPLUS1: usize>(
+        x: crate::biginteger::SignedBigIntHi32<K>,
+    ) -> Fp<MontBackend<Self, N>, N> {
+        debug_assert!(
+            KPLUS1 == K + 1,
+            "from_signed_bigint_hi32 requires KPLUS1 = K + 1"
+        );
+        // if x.is_zero() {
+        //     return Fp::zero();
+        // }
+        let mag = x.magnitude_as_bigint_nplus1::<KPLUS1>();
+        let fe = Self::from_bigint_mixed::<KPLUS1>(mag);
+        if x.is_positive() {
+            fe
+        } else {
+            -fe
         }
     }
 
@@ -429,8 +589,8 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
         //   limb of each `a_i` together. As these have the same offset within the overall
         //   operand scanning flow, their results can be summed directly.
         // - We can interleave the multiplication and reduction steps, resulting in a
-        //   single bitshift by the limb size after each iteration. This means we only
-        //   need to store a single extra limb overall, instead of keeping around all the
+        //   single bitshift by the limb size after each iteration. This means we
+        //   only need to store a single extra limb overall, instead of keeping around all the
         //   intermediate results and eventually having twice as many limbs.
 
         let modulus_size = Self::MODULUS.const_num_bits() as usize;
@@ -596,9 +756,25 @@ pub const fn sqrt_precomputation<const N: usize, T: MontConfig<N>>(
     }
 }
 
-/// Construct a [`Fp<MontBackend<T, N>, N>`] element from a literal string.
-///
-/// This should be used primarily for constructing constant field elements; in a
+/// Adapted the `bn256-table` feature from `halo2curves`:
+/// https://github.com/privacy-scaling-explorations/halo2curves/blob/main/script/bn256.py
+pub const fn small_element_montgomery_precomputation<const N: usize, T: MontConfig<N>>(
+) -> [Fp<MontBackend<T, N>, N>; PRECOMP_TABLE_SIZE] {
+    let mut lookup_table: [Fp<MontBackend<T, N>, N>; PRECOMP_TABLE_SIZE] =
+        [Fp::new_unchecked(BigInt::zero()); PRECOMP_TABLE_SIZE];
+
+    let mut i: usize = 1;
+    while i < PRECOMP_TABLE_SIZE {
+        let mut limbs = [0u64; N];
+        limbs[0] = i as u64;
+        lookup_table[i] = <Fp<MontBackend<T, N>, N>>::new(BigInt::new(limbs));
+        i += 1;
+    }
+    lookup_table
+}
+
+/// Construct a [`Fp<MontBackend<T, N>, N>`] element from a literal string. This
+/// should be used primarily for constructing constant field elements; in a
 /// non-const context, [`Fp::from_str`](`ark_std::str::FromStr::from_str`) is
 /// preferable.
 ///
@@ -665,6 +841,8 @@ impl<T: MontConfig<N>, const N: usize> FpConfig<N> for MontBackend<T, N> {
     const SMALL_SUBGROUP_BASE_ADICITY: Option<u32> = T::SMALL_SUBGROUP_BASE_ADICITY;
     const LARGE_SUBGROUP_ROOT_OF_UNITY: Option<Fp<Self, N>> = T::LARGE_SUBGROUP_ROOT_OF_UNITY;
     const SQRT_PRECOMP: Option<crate::SqrtPrecomputation<Fp<Self, N>>> = T::SQRT_PRECOMP;
+    const SMALL_ELEMENT_MONTGOMERY_PRECOMP: [Fp<Self, N>; PRECOMP_TABLE_SIZE] =
+        T::SMALL_ELEMENT_MONTGOMERY_PRECOMP;
 
     fn add_assign(a: &mut Fp<Self, N>, b: &Fp<Self, N>) {
         T::add_assign(a, b)
@@ -710,9 +888,17 @@ impl<T: MontConfig<N>, const N: usize> FpConfig<N> for MontBackend<T, N> {
         T::from_bigint(r)
     }
 
+    fn from_bigint_unchecked(r: BigInt<N>) -> Option<Fp<Self, N>> {
+        T::from_bigint_unchecked(r)
+    }
+
     #[inline]
     fn into_bigint(a: Fp<Self, N>) -> BigInt<N> {
         T::into_bigint(a)
+    }
+
+    fn from_u64<const NPLUS1: usize>(r: u64) -> Option<Fp<Self, N>> {
+        T::from_u64::<NPLUS1>(r)
     }
 }
 
@@ -749,6 +935,134 @@ impl<T: MontConfig<N>, const N: usize> Fp<MontBackend<T, N>, N> {
         Self(element, PhantomData)
     }
 
+    /// Barrett reduce an `L`-limb BigInt to a field element (compute a mod p), generic over `L`.
+    /// Implementation folds from high to low using the existing N+1 Barrett kernel.
+    /// Precondition: L >= N. For performance, prefer small L close to N..N+3 when possible.
+    #[inline(always)]
+    pub fn from_barrett_reduce<const L: usize, const NPLUS1: usize>(unreduced: BigInt<L>) -> Self {
+        debug_assert!(NPLUS1 == N + 1);
+        debug_assert!(L >= N);
+
+        // Start with acc = 0 (N-limb)
+        let mut acc = BigInt::<N>::zero();
+        // Fold each input limb from high to low: acc' = reduce( limb || acc ) via N+1 kernel
+        // Note: When L == 1, this reduces one N+1 formed by (low_limb, zeros)
+        let mut i = L;
+        while i > 0 {
+            i -= 1;
+            let c2 = nplus1_pair_low_to_bigint::<N, NPLUS1>((unreduced.0[i], acc.0));
+            acc = barrett_reduce_nplus1_to_n::<T, N, NPLUS1>(c2);
+        }
+        Self::new_unchecked(acc)
+    }
+
+    /// Montgomery reduction for arbitrary input width L >= 2N.
+    ///
+    /// Runs exactly N Montgomery steps (i = 0..N-1) over the L-limb buffer to compute
+    /// t' = (unreduced + q * MODULUS) / R, where R = b^N. The remaining (L - N) limbs
+    /// store t' in base-b. For L > 2N, we first fold the entire tail (indices N..L) down
+    /// to an N-limb accumulator using the N+1 Barrett reducer (interpreting the tail as a
+    /// base-b number), place that as the high N limbs to form a 2N-limb buffer, and then
+    /// perform the standard N-step Montgomery reduction on that 2N-limb buffer.
+    ///
+    /// Preconditions:
+    /// - L >= 2N (buffer must be large enough to perform N steps safely)
+    ///
+    /// Computes: unreduced * R^{-1} mod MODULUS.
+    #[inline(always)]
+    pub fn from_montgomery_reduce<const L: usize, const NPLUS1: usize>(
+        unreduced: BigInt<L>,
+    ) -> Self {
+        debug_assert!(NPLUS1 == N + 1);
+        debug_assert!(L >= N + N, "from_montgomery_reduce_var requires L >= 2N");
+
+        let mut limbs = unreduced; // reuse storage for the buffer
+
+        // If L > 2N, first fold the extra high limbs down.
+        if L > 2 * N {
+            // Fold the tail (indices N..L) into an N-limb accumulator via Barrett.
+            let mut acc = BigInt::<N>::zero();
+            let mut i = L;
+            while i > N {
+                i -= 1;
+                let c2 = nplus1_pair_low_to_bigint::<N, NPLUS1>((limbs.0[i], acc.0));
+                acc = barrett_reduce_nplus1_to_n::<T, N, NPLUS1>(c2);
+            }
+
+            // Recompose buffer: [low_N | acc | zeros...]
+            limbs.0[N..(N + N)].copy_from_slice(&acc.0);
+            let mut j = 2 * N;
+            while j < L {
+                limbs.0[j] = 0;
+                j += 1;
+            }
+        }
+
+        // Phase 2: run exactly N Montgomery steps on the 2N-limb buffer.
+        let carry = Self::montgomery_reduce_in_place::<L>(&mut limbs);
+
+        // Extract result and finalize.
+        let mut result_limbs = [0u64; N];
+        result_limbs.copy_from_slice(&limbs.0[N..(N + N)]);
+        let mut result = Self::new_unchecked(BigInt::<N>(result_limbs));
+        if T::MODULUS_HAS_SPARE_BIT {
+            result.subtract_modulus();
+        } else {
+            result.subtract_modulus_with_carry(carry != 0);
+        }
+        result
+    }
+
+    /// Construct a new field element from a BigInt<NPLUS1>
+    /// which is in montgomery form and just needs to be reduced
+    /// via a barrett reduction.
+    #[inline(always)]
+    pub fn from_unchecked_nplus1<const NPLUS1: usize>(element: BigInt<{ NPLUS1 }>) -> Self {
+        debug_assert!(NPLUS1 == N + 1);
+        let r = barrett_reduce_nplus1_to_n::<T, N, NPLUS1>(element);
+        Self::new_unchecked(r)
+    }
+
+    /// Construct a new field element from a BigInt<NPLUS2>
+    /// which is in montgomery form and just needs to be reduced
+    /// via a barrett reduction.
+    #[inline]
+    pub fn from_unchecked_nplus2<const NPLUS1: usize, const NPLUS2: usize>(
+        element: BigInt<NPLUS2>,
+    ) -> Self {
+        debug_assert!(NPLUS1 == N + 1);
+        debug_assert!(NPLUS2 == N + 2);
+        let c1 = BigInt::<NPLUS1>(element.0[1..NPLUS2].try_into().unwrap()); // c1 has N+1 limbs
+        let r1 = barrett_reduce_nplus1_to_n::<T, N, NPLUS1>(c1); // r1 = c1 mod p ([u64; N])
+                                                                 // Round 2: Reduce c2 = c_lo[0] + r1 * r.
+        let c2 = nplus1_pair_low_to_bigint::<N, NPLUS1>((element.0[0], r1.0)); // c2 has N+1 limbs
+        let r2 = barrett_reduce_nplus1_to_n::<T, N, NPLUS1>(c2); // r2 = c2 mod p = c mod p ([u64; N])
+        Self::new_unchecked(r2)
+    }
+
+    /// Construct from a smaller-width BigInt<M> by zero-extending into N limbs.
+    /// Panics if the resulting value is >= modulus.
+    #[inline]
+    pub fn from_bigint_mixed<const M: usize>(r: BigInt<M>) -> Self {
+        T::from_bigint_mixed::<M>(r)
+    }
+
+    /// Construct from a signed big integer (sign-magnitude with M limbs).
+    /// Panics if |x| >= modulus.
+    #[inline]
+    pub fn from_signed_bigint<const M: usize>(x: crate::biginteger::SignedBigInt<M>) -> Self {
+        T::from_signed_bigint::<M>(x)
+    }
+
+    /// Construct from a signed big integer with high 32-bit tail and K low 64-bit limbs.
+    /// KPLUS1 must be K+1. Panics if |x| >= modulus.
+    #[inline]
+    pub fn from_signed_bigint_hi32<const K: usize, const KPLUS1: usize>(
+        x: crate::biginteger::SignedBigIntHi32<K>,
+    ) -> Self {
+        T::from_signed_bigint_hi32::<K, KPLUS1>(x)
+    }
+
     const fn const_is_zero(&self) -> bool {
         self.0.const_is_zero()
     }
@@ -763,9 +1077,8 @@ impl<T: MontConfig<N>, const N: usize> Fp<MontBackend<T, N>, N> {
     }
 
     /// Interpret a set of limbs (along with a sign) as a field element.
-    /// For *internal* use only; please use the `ark_ff::MontFp` macro instead
-    /// of this method
-    #[doc(hidden)]
+    /// The input limbs are interpreted little-endian. For public use; prefer
+    /// the `ark_ff::MontFp` macro for constant contexts.
     pub const fn from_sign_and_limbs(is_positive: bool, limbs: &[u64]) -> Self {
         let mut repr = BigInt([0; N]);
         assert!(limbs.len() <= N);
@@ -826,6 +1139,173 @@ impl<T: MontConfig<N>, const N: usize> Fp<MontBackend<T, N>, N> {
         }
     }
 
+    /// Multiply by a sparse RHS with exactly 2 non-zero high limbs at positions N-2 and N-1.
+    /// Zero overhead when caller already has limbs separated.
+    ///
+    /// - `limb_lo`: The limb at position N-2 (lower of the two high limbs)
+    /// - `limb_hi`: The limb at position N-1 (highest limb)
+    #[inline(always)]
+    pub const fn mul_by_hi_2limbs(self, limb_lo: u64, limb_hi: u64) -> Self {
+        let mut r = [0u64; N];
+        // i = N-2: process limb_lo
+        if N >= 2 {
+            let mut carry1;
+            r[0] = mac!(r[0], (self.0).0[0], limb_lo, &mut carry1);
+            let k = r[0].wrapping_mul(T::INV);
+            let mut carry2;
+            mac!(r[0], k, T::MODULUS.0[0], &mut carry2);
+            crate::const_for!((j in 1..N) {
+                let new_rj = mac_with_carry!(r[j], (self.0).0[j], limb_lo, &mut carry1);
+                let new_rj_minus_1 = mac_with_carry!(new_rj, k, T::MODULUS.0[j], &mut carry2);
+                r[j] = new_rj;
+                r[j - 1] = new_rj_minus_1;
+            });
+            r[N - 1] = carry1.wrapping_add(carry2);
+        }
+        // i = N-1: process limb_hi
+        {
+            let mut carry1;
+            r[0] = mac!(r[0], (self.0).0[0], limb_hi, &mut carry1);
+            let k = r[0].wrapping_mul(T::INV);
+            let mut carry2;
+            mac!(r[0], k, T::MODULUS.0[0], &mut carry2);
+            crate::const_for!((j in 1..N) {
+                let new_rj = mac_with_carry!(r[j], (self.0).0[j], limb_hi, &mut carry1);
+                let new_rj_minus_1 = mac_with_carry!(new_rj, k, T::MODULUS.0[j], &mut carry2);
+                r[j] = new_rj;
+                r[j - 1] = new_rj_minus_1;
+            });
+            r[N - 1] = carry1.wrapping_add(carry2);
+        }
+        let mut out = Self::new_unchecked(crate::BigInt::<N>(r));
+        out = out.const_subtract_modulus();
+        out
+    }
+
+    /// Multiply by a value stored as `[u64; 4]` where only indices 2 and 3 are non-zero.
+    /// Uses indices 2 and 3 as the high two limbs (positions N-2 and N-1).
+    /// Convenience wrapper around [`Self::mul_by_hi_2limbs`].
+    #[inline(always)]
+    pub const fn mul_hi_bigint_u128(self, big_int_repre: [u64; 4]) -> Self {
+        self.mul_by_hi_2limbs(big_int_repre[2], big_int_repre[3])
+    }
+
+    /// Montgomery reduction for 2N-limb inputs (standard Montgomery reduction)
+    /// Takes a 2N-limb BigInt that represents a product in "unreduced" form
+    /// and reduces it to N limbs in Montgomery form.
+    /// Keep this for now for backwards compatibility.
+    #[inline(always)]
+    pub fn montgomery_reduce_2n<const TWON: usize>(input: BigInt<TWON>) -> Self {
+        debug_assert!(TWON == 2 * N, "montgomery_reduce_2n requires TWON == 2N");
+        let mut limbs = input;
+        let carry = Self::montgomery_reduce_in_place::<TWON>(&mut limbs);
+
+        // Extract the upper N limbs after exactly N REDC steps
+        let mut result_limbs = [0u64; N];
+        result_limbs.copy_from_slice(&limbs.0[N..]);
+
+        let mut result = Self::new_unchecked(BigInt::<N>(result_limbs));
+        if T::MODULUS_HAS_SPARE_BIT {
+            result.subtract_modulus();
+        } else {
+            result.subtract_modulus_with_carry(carry != 0);
+        }
+        result
+    }
+
+    /// Perform exactly N Montgomery reduction steps over the leading 2N limbs of `limbs`,
+    /// using the canonical REDC subroutine from `mul_without_cond_subtract`.
+    /// Treats `limbs` as `[lo[0..N), hi[0..N), extra...]` and updates only the high half.
+    /// Returns the final carry-out (0 or 1) from the top of the reduction.
+    #[inline(always)]
+    #[unroll_for_loops(12)]
+    pub fn montgomery_reduce_in_place<const L: usize>(limbs: &mut BigInt<L>) -> u64 {
+        debug_assert!(L >= 2 * N, "montgomery_reduce_in_place requires L >= 2N");
+
+        // Work directly on the buffer to avoid copies: split into lo and hi views.
+        let (lo, rest) = limbs.0.split_at_mut(N);
+        let hi = &mut rest[..N];
+
+        // Montgomery reduction (canonical form)
+        let mut carry2 = 0u64;
+        for i in 0..N {
+            let tmp = lo[i].wrapping_mul(T::INV);
+            let mut carry;
+            mac!(lo[i], tmp, T::MODULUS.0[0], &mut carry);
+            for j in 1..N {
+                let k = i + j;
+                if k >= N {
+                    let idx = k - N;
+                    hi[idx] = mac_with_carry!(hi[idx], tmp, T::MODULUS.0[j], &mut carry);
+                } else {
+                    lo[k] = mac_with_carry!(lo[k], tmp, T::MODULUS.0[j], &mut carry);
+                }
+            }
+            hi[i] = adc!(hi[i], carry, &mut carry2);
+        }
+
+        carry2
+    }
+
+    #[inline(always)]
+    pub fn mul_u64<const NPLUS1: usize>(self, other: u64) -> Self {
+        debug_assert!(NPLUS1 == N + 1);
+        let c: BigInt<NPLUS1> = BigInt::mul_u64_w_carry(&self.0, other); // multiply
+        Self::from_unchecked_nplus1(c) // reduce and return the result
+    }
+
+    /// Multiply by an i64. Invokes `mul_u64` if the input is positive,
+    /// otherwise negates the result of `mul_u64` of the absolute value.
+    #[inline(always)]
+    pub fn mul_i64<const NPLUS1: usize>(self, other: i64) -> Self {
+        debug_assert!(NPLUS1 == N + 1);
+        let abs: u64 = other.unsigned_abs();
+        let res = self.mul_u64::<NPLUS1>(abs);
+        if other < 0 {
+            -res
+        } else {
+            res
+        }
+    }
+
+    /// Multiply by an i128.
+    /// Uses optimized mul_u64 if the absolute value of the input fits within u64,
+    /// otherwise falls back to the two-step Barrett reduction (`mul_u128_aux`).
+    #[inline(always)]
+    pub fn mul_i128<const NPLUS1: usize, const NPLUS2: usize>(self, other: i128) -> Self {
+        let abs: u128 = other.unsigned_abs();
+        let res = if abs <= u64::MAX as u128 {
+            self.mul_u64::<NPLUS1>(abs as u64)
+        } else {
+            self.mul_u128_aux::<NPLUS1, NPLUS2>(abs)
+        };
+        if other < 0 {
+            -res
+        } else {
+            res
+        }
+    }
+
+    /// Multiply by a u128.
+    /// Uses optimized mul_u64 if the input fits within u64,
+    /// otherwise falls back to standard multiplication.
+    #[inline(always)]
+    pub fn mul_u128<const NPLUS1: usize, const NPLUS2: usize>(self, other: u128) -> Self {
+        if other >> 64 == 0 {
+            self.mul_u64::<NPLUS1>(other as u64)
+        } else {
+            self.mul_u128_aux::<NPLUS1, NPLUS2>(other)
+        }
+    }
+
+    /// Fallback option for mul_u128: if the input does not fit within u64,
+    /// we perform a more expensive procedure with 2 rounds of Barrett reduction.
+    #[inline(always)]
+    pub fn mul_u128_aux<const NPLUS1: usize, const NPLUS2: usize>(self, other: u128) -> Self {
+        let c = BigInt::mul_u128_w_carry::<NPLUS1, NPLUS2>(&self.0, other); // mul
+        Self::from_unchecked_nplus2::<NPLUS1, NPLUS2>(c) // Reduce and return the result
+    }
+
     const fn const_is_valid(&self) -> bool {
         crate::const_for!((i in 0..N) {
             if (self.0).0[N - i - 1] < T::MODULUS.0[N - i - 1] {
@@ -856,20 +1336,500 @@ impl<T: MontConfig<N>, const N: usize> Fp<MontBackend<T, N>, N> {
     const fn sub_with_borrow(a: &BigInt<N>, b: &BigInt<N>) -> BigInt<N> {
         a.const_sub_with_borrow(b).0
     }
+
+    /// Helper function: multiply a BigInt<N> by u64 and accumulate into BigInt<NPLUS1>
+    /// This avoids creating temporary BigInt<NPLUS1> objects.
+    #[inline(always)]
+    #[unroll_for_loops(8)]
+    fn mul_u64_accumulate<const NPLUS1: usize>(acc: &mut BigInt<NPLUS1>, a: &BigInt<N>, b: u64) {
+        debug_assert!(NPLUS1 == N + 1);
+        use crate::biginteger::arithmetic as fa;
+
+        let mut carry = 0u64;
+        for i in 0..N {
+            acc.0[i] = fa::mac_with_carry(acc.0[i], a.0[i], b, &mut carry);
+        }
+
+        // Add final carry to the high limb
+        let final_carry = fa::adc(&mut acc.0[N], carry, 0);
+        debug_assert!(final_carry == 0, "overflow in mul_u64_accumulate");
+    }
+
+    /// Compute a linear combination of field elements with u64 coefficients.
+    /// Performs unreduced accumulation in BigInt<NPLUS1>, then one final reduction.
+    /// This is more efficient than individual multiplications and additions.
+    #[inline(always)]
+    pub fn linear_combination_u64<const NPLUS1: usize>(pairs: &[(Self, u64)]) -> Self {
+        debug_assert!(NPLUS1 == N + 1);
+        debug_assert!(
+            !pairs.is_empty(),
+            "linear_combination_u64 requires at least one pair"
+        );
+
+        // Start with first term
+        let mut acc = pairs[0].0 .0.mul_u64_w_carry::<NPLUS1>(pairs[0].1);
+
+        // Accumulate remaining terms using multiply-accumulate to avoid temporaries
+        for (a, b) in &pairs[1..] {
+            Self::mul_u64_accumulate::<NPLUS1>(&mut acc, &a.0, *b);
+        }
+
+        Self::from_unchecked_nplus1::<NPLUS1>(acc)
+    }
+
+    /// Compute a linear combination with separate positive and negative terms.
+    /// Each term is multiplied by a u64 coefficient, then positive and negative
+    /// sums are computed separately and subtracted. One final reduction is performed.
+    #[inline(always)]
+    pub fn linear_combination_i64<const NPLUS1: usize>(
+        pos: &[(Self, u64)],
+        neg: &[(Self, u64)],
+    ) -> Self {
+        debug_assert!(NPLUS1 == N + 1);
+        debug_assert!(
+            !pos.is_empty(),
+            "linear_combination_i64 requires at least one positive term"
+        );
+        debug_assert!(
+            !neg.is_empty(),
+            "linear_combination_i64 requires at least one negative term"
+        );
+
+        // Compute unreduced positive sum
+        let mut pos_lc = pos[0].0 .0.mul_u64_w_carry::<NPLUS1>(pos[0].1);
+        for (a, b) in &pos[1..] {
+            Self::mul_u64_accumulate::<NPLUS1>(&mut pos_lc, &a.0, *b);
+        }
+
+        // Compute unreduced negative sum
+        let mut neg_lc = neg[0].0 .0.mul_u64_w_carry::<NPLUS1>(neg[0].1);
+        for (a, b) in &neg[1..] {
+            Self::mul_u64_accumulate::<NPLUS1>(&mut neg_lc, &a.0, *b);
+        }
+
+        // Subtract and reduce once
+        match pos_lc.cmp(&neg_lc) {
+            core::cmp::Ordering::Greater => {
+                let borrow = pos_lc.sub_with_borrow(&neg_lc);
+                debug_assert!(!borrow, "borrow in linear_combination_i64");
+                Self::from_unchecked_nplus1::<NPLUS1>(pos_lc)
+            },
+            core::cmp::Ordering::Less => {
+                let borrow = neg_lc.sub_with_borrow(&pos_lc);
+                debug_assert!(!borrow, "borrow in linear_combination_i64");
+                -Self::from_unchecked_nplus1::<NPLUS1>(neg_lc)
+            },
+            core::cmp::Ordering::Equal => Self::zero(),
+        }
+    }
+}
+
+#[inline(always)]
+fn nplus1_pair_high_to_bigint<const N: usize, const NPLUS1: usize>(
+    r_tmp: ([u64; N], u64),
+) -> BigInt<NPLUS1> {
+    debug_assert!(NPLUS1 == N + 1);
+    let mut limbs = [0u64; NPLUS1];
+    limbs[..N].copy_from_slice(&r_tmp.0);
+    limbs[N] = r_tmp.1;
+    BigInt::<NPLUS1>(limbs)
+}
+
+#[inline(always)]
+fn nplus1_pair_low_to_bigint<const N: usize, const NPLUS1: usize>(
+    r_tmp: (u64, [u64; N]),
+) -> BigInt<NPLUS1> {
+    debug_assert!(NPLUS1 == N + 1);
+    let mut limbs = [0u64; NPLUS1];
+    limbs[0] = r_tmp.0;
+    limbs[1..NPLUS1].copy_from_slice(&r_tmp.1);
+    BigInt::<NPLUS1>(limbs)
+}
+
+/// Conditional subtraction logic for Barrett reduction, trading an extra comparison for a conditional subtraction.
+/// Includes optimizations based on MODULUS_NUM_SPARE_BITS.
+/// Takes an N+1 limb intermediate result `r_tmp` and returns the N-limb final result.
+#[unroll_for_loops(4)]
+#[inline(always)]
+fn barrett_cond_subtract<T: MontConfig<N>, const N: usize, const NPLUS1: usize>(
+    r_tmp: BigInt<NPLUS1>,
+) -> BigInt<N> {
+    debug_assert!(NPLUS1 == N + 1);
+    // Compare with 2p
+    let compare_2p = if T::MODULUS_NUM_SPARE_BITS == 0 {
+        // S = 0: Must use N+1 compare
+        r_tmp.cmp(&nplus1_pair_high_to_bigint::<N, NPLUS1>(
+            T::MODULUS_TIMES_2_NPLUS1,
+        ))
+    } else {
+        // S >= 1: 2p fits N limbs (mostly). Compare N limbs.
+        // We assume r_tmp's high limb is 0 here if S >= 1.
+        debug_assert!(
+            r_tmp.0[N] == 0,
+            "High limb expected to be 0 if S >= 1 before 2p comparison"
+        );
+        let p2_n = BigInt::<N>(T::MODULUS_TIMES_2_NPLUS1.0);
+        BigInt::<N>(r_tmp.0[0..N].try_into().unwrap()).cmp(&p2_n) // Compare N limbs
+    };
+
+    if compare_2p != core::cmp::Ordering::Less {
+        // r_tmp >= 2p
+        // Compare with 3p
+        let compare_3p = if T::MODULUS_NUM_SPARE_BITS < 2 {
+            // S < 2 (S=0 or S=1): Need N+1 compare
+            r_tmp.cmp(&nplus1_pair_high_to_bigint::<N, NPLUS1>(
+                T::MODULUS_TIMES_3_NPLUS1,
+            ))
+        } else {
+            // S >= 2: 3p fits N limbs. Compare N limbs.
+            debug_assert!(
+                r_tmp.0[N] == 0,
+                "High limb expected to be 0 if S >= 2 before 3p comparison"
+            );
+            let p3_n = BigInt::<N>(T::MODULUS_TIMES_3_NPLUS1.0);
+            BigInt::<N>(r_tmp.0[0..N].try_into().unwrap()).cmp(&p3_n) // Compare N limbs
+        };
+
+        if compare_3p != core::cmp::Ordering::Less {
+            // r_tmp >= 3p
+            // Subtract 3p
+            if T::MODULUS_NUM_SPARE_BITS >= 2 {
+                // S >= 2: 3p fits N limbs. Use N-limb sub.
+                debug_assert!(
+                    r_tmp.0[N] == 0,
+                    "High limb expected to be 0 if S >= 2 for 3p subtraction"
+                );
+                let p3_n = BigInt::<N>(T::MODULUS_TIMES_3_NPLUS1.0);
+                let r_n = BigInt::<N>(r_tmp.0[0..N].try_into().unwrap());
+                // Subtract 3p from r_n
+                // Use const_sub_with_borrow to avoid borrow checking issues
+                // This is safe because we know r_n >= 3p from the comparison above.
+                let (res_n, borrow_n) = r_n.const_sub_with_borrow(&p3_n);
+                debug_assert!(!borrow_n, "Borrow should not occur subtracting 3p (S>=2)");
+                return res_n; // Return the N-limb result directly
+            } else {
+                // S < 2: Use N+1 limb sub.
+                let p3_n1 = nplus1_pair_high_to_bigint::<N, NPLUS1>(T::MODULUS_TIMES_3_NPLUS1);
+                let (res_n1, borrow) = r_tmp.const_sub_with_borrow(&p3_n1);
+                debug_assert!(!borrow, "Borrow should not occur subtracting 3p (S<2)");
+                debug_assert!(
+                    res_n1.0[N] == 0,
+                    "High limb must be zero after subtracting 3p"
+                );
+                return BigInt::<N>(res_n1.0[0..N].try_into().unwrap());
+            }
+        } else {
+            // 2p <= r_tmp < 3p
+            // Subtract 2p
+            if T::MODULUS_NUM_SPARE_BITS >= 1 {
+                // S >= 1: 2p fits N limbs (mostly). Use N-limb sub.
+                debug_assert!(
+                    r_tmp.0[N] == 0,
+                    "High limb expected to be 0 if S >= 1 for 2p subtraction"
+                );
+                let p2_n = BigInt::<N>(T::MODULUS_TIMES_2_NPLUS1.0);
+                let r_n = BigInt::<N>(r_tmp.0[0..N].try_into().unwrap());
+                let (res_n, borrow_n) = r_n.const_sub_with_borrow(&p2_n);
+                debug_assert!(!borrow_n, "Borrow should not occur subtracting 2p (S>=1)");
+                return res_n; // Return the N-limb result directly
+            } else {
+                // S == 0: Use N+1 limb sub.
+                let p2_n1 = nplus1_pair_high_to_bigint::<N, NPLUS1>(T::MODULUS_TIMES_2_NPLUS1);
+                let (res_n1, borrow) = r_tmp.const_sub_with_borrow(&p2_n1);
+                debug_assert!(!borrow, "Borrow should not occur subtracting 2p (S=0)");
+                debug_assert!(
+                    res_n1.0[N] == 0,
+                    "High limb must be zero after subtracting 2p"
+                );
+                return BigInt::<N>(res_n1.0[0..N].try_into().unwrap());
+            }
+        }
+    } else {
+        // r_tmp < 2p
+        // Compare with p
+        let compare_p = if T::MODULUS_NUM_SPARE_BITS >= 1 {
+            // S >= 1: Use N-limb compare.
+            // Assume r_tmp high limb is 0 because r_tmp < 2p and 2p fits N limbs (mostly) if S >= 1
+            debug_assert!(
+                r_tmp.0[N] == 0,
+                "High limb expected to be 0 if S >= 1 before p comparison"
+            );
+            let p_n = BigInt::<N>(T::MODULUS.0);
+            BigInt::<N>(r_tmp.0[0..N].try_into().unwrap()).cmp(&p_n) // Compare N limbs
+        } else {
+            // S == 0: Use N+1 limb compare.
+            r_tmp.cmp(&nplus1_pair_high_to_bigint::<N, NPLUS1>(T::MODULUS_NPLUS1))
+        };
+
+        if compare_p != core::cmp::Ordering::Less {
+            // p <= r_tmp < 2p
+            // Subtract p
+            if T::MODULUS_NUM_SPARE_BITS >= 1 {
+                // S >= 1: Use N-limb sub.
+                let p_n = BigInt::<N>(T::MODULUS.0);
+                let r_n = BigInt::<N>(r_tmp.0[0..N].try_into().unwrap());
+                let (res_n, borrow_n) = r_n.const_sub_with_borrow(&p_n);
+                debug_assert!(!borrow_n, "Borrow should not occur subtracting p (S>=1)");
+                return res_n; // Return the N-limb result directly
+            } else {
+                // S == 0: Use N+1 limb sub.
+                let p_n1 = nplus1_pair_high_to_bigint::<N, NPLUS1>(T::MODULUS_NPLUS1);
+                let (res_n1, borrow) = r_tmp.const_sub_with_borrow(&p_n1);
+                debug_assert!(!borrow, "Borrow should not occur subtracting p (S=0)");
+                debug_assert!(
+                    res_n1.0[N] == 0,
+                    "High limb must be zero after subtracting p"
+                );
+                return BigInt::<N>(res_n1.0[0..N].try_into().unwrap());
+            }
+        } else {
+            // r_tmp < p
+            // Subtract 0 (No-op)
+            // Result must already fit in N limbs. Assert high limb is 0.
+            debug_assert!(r_tmp.0[N] == 0, "High limb must be zero when r_tmp < p");
+            return BigInt::<N>(r_tmp.0[0..N].try_into().unwrap());
+        }
+    }
+}
+
+/// Subtract two N+1 limb big integers where `a` is (u64, [u64; N]) and `b` is ([u64; N], u64).
+/// Returns the N+1 limb result as ([u64; N], u64) and a boolean indicating if a borrow occurred.
+#[unroll_for_loops(8)]
+#[inline(always)]
+fn sub_bigint_plus_one_prime<const N: usize>(
+    a: (u64, [u64; N]), // Format: (low_limb, high_n_limbs)
+    b: ([u64; N], u64), // Format: (low_n_limbs, high_limb)
+) -> (([u64; N], u64), bool) {
+    let (a_lo, a_hi_n) = a;
+    let (b_lo_n, b_hi) = b;
+    let mut result_lo_n = [0u64; N];
+    let mut borrow: u64 = 0;
+
+    // Subtract low limb: result_lo_n[0] = a_lo - b_lo_n[0] - borrow (initial borrow = 0)
+    result_lo_n[0] = a_lo; // Initialize result limb with a_lo
+    borrow = fa::sbb(&mut result_lo_n[0], b_lo_n[0], borrow); // result_lo_n[0] -= b_lo_n[0] + borrow
+
+    // Subtract middle limbs (if N > 1): result_lo_n[i] = a_hi_n[i-1] - b_lo_n[i] - borrow
+    // This loop covers indices i = 1 to N-1.
+    // It uses a_hi_n limbs from index 0 to N-2.
+    for i in 1..N {
+        result_lo_n[i] = a_hi_n[i - 1]; // Initialize result limb with corresponding a limb
+        borrow = fa::sbb(&mut result_lo_n[i], b_lo_n[i], borrow); // result_lo_n[i] -= b_lo_n[i] + borrow
+    }
+
+    // Subtract high limb: result_hi = a_hi_n[N-1] - b_hi - borrow
+    let mut result_hi = a_hi_n[N - 1]; // Initialize result limb with last a limb
+    borrow = fa::sbb(&mut result_hi, b_hi, borrow); // result_hi -= b_hi + borrow
+
+    let final_borrow_occurred = borrow != 0;
+
+    ((result_lo_n, result_hi), final_borrow_occurred)
+}
+
+/// Helper function to perform Barrett reduction from N+1 limbs to N limbs.
+/// Input `c` is represented as `(u64, [u64; N])` (to be compatible with outside invocations).
+/// Internally, it converts to `([u64; N], u64)` and operates in that format.
+/// Output is the N-limb result `[u64; N]`.
+#[unroll_for_loops(4)]
+#[inline(always)]
+fn barrett_reduce_nplus1_to_n<T: MontConfig<N>, const N: usize, const NPLUS1: usize>(
+    c: BigInt<NPLUS1>,
+) -> BigInt<N> {
+    debug_assert!(NPLUS1 == N + 1, "NPLUS1 must be N + 1 for this function");
+    // Compute tilde_c = floor(c / R') = floor(c / 2^MODULUS_BITS)
+    // This involves the top two limbs of the N+1 limb number `c`.
+    // Assume that `N >= 1`
+    let tilde_c: u64 = if T::MODULUS_HAS_SPARE_BIT {
+        let high_limb = c.0[N];
+        let second_high_limb = c.0[N - 1]; // N is at least 1, so this is safe
+        (high_limb << T::MODULUS_NUM_SPARE_BITS)
+            + (second_high_limb >> (64 - T::MODULUS_NUM_SPARE_BITS))
+    } else {
+        c.0[N] // If no spare bits, tilde_c is just the highest limb
+    };
+
+    // Estimate m = floor( (tilde_c * BARRETT_MU) / r )
+    // where r = 2^64
+    let m: u64 = ((tilde_c as u128 * T::BARRETT_MU as u128) >> 64) as u64;
+
+    // unroll T::MODULUS_TIMES_2_NPLUS1 from ([u64; N], u64) to BigInt<N+1>
+    let mut m2p = nplus1_pair_high_to_bigint::<N, NPLUS1>(T::MODULUS_TIMES_2_NPLUS1);
+    // Compute m * 2p (N+1 limbs)
+    m2p.mul_u64_in_place(m);
+
+    // I really have no idea why the following sequence of operations
+    // is significantly faster than a simple BigInt sub operation.
+    // Compute r_tmp = c - m * 2p (result is ([u64; N], u64))
+    let m_times_2p = (
+        m2p.0[0..N].try_into().unwrap(), // Convert to ([u64; N], u64)
+        m2p.0[N],                        // High limb remains as u64
+    );
+    let (r_tmp, r_tmp_borrow) =
+        sub_bigint_plus_one_prime((c.0[0], c.0[1..N + 1].try_into().unwrap()), m_times_2p);
+    // A borrow here implies c was smaller than m*2p, which shouldn't happen with correct m.
+    debug_assert!(!r_tmp_borrow, "Borrow occurred calculating c - m*2p");
+    // Change formats again!
+    let r_tmp_bigint = nplus1_pair_high_to_bigint::<N, NPLUS1>(r_tmp);
+    // Alternative simple BigInt subtraction (much slower for some reason):
+    /*let (r_tmp_bigint, r_borrow) = c.const_sub_with_borrow(&m2p);
+    debug_assert!(!r_borrow, "Borrow occurred calculating c - m*2p");*/
+
+    // Use the optimized conditional subtraction to go from N+1 limbs to N limbs.
+    barrett_cond_subtract::<T, N, NPLUS1>(r_tmp_bigint)
 }
 
 #[cfg(test)]
 mod test {
-    use ark_std::{str::FromStr, vec::*};
-    use ark_test_curves::secp256k1::Fr;
+    use ark_std::{str::FromStr, test_rng, vec::*, UniformRand};
+    use ark_test_curves::ark_ff::BigInt as ArkBigInt;
+    use ark_test_curves::bn254::Fr;
     use num_bigint::{BigInt, BigUint, Sign};
+    use rand::Rng;
+    // constants for the number of limbs in bn254
+    const N: usize = 4;
+    const NPLUS1: usize = N + 1;
+    const NPLUS2: usize = N + 2;
+
+    #[test]
+    fn test_mul_u64_random() {
+        let mut rng = test_rng();
+        for _ in 0..100 {
+            let a = Fr::rand(&mut rng);
+            let b_val: u64 = rng.gen();
+
+            // Expected result using standard field multiplication
+            let b_bigint = ArkBigInt::from(b_val);
+            let expected_c = a * Fr::from(b_bigint);
+
+            // Actual result using the function under test
+            let result_c = a.mul_u64::<NPLUS1>(b_val);
+
+            assert_eq!(
+                result_c,
+                expected_c,
+                "mul_u64 failed: a = {}, b = {}\\nGot:      {}\\nExpected: {}\\nGot (Debug):      {:?}\\nExpected (Debug): {:?}", // Added Debug formatting
+                a, b_val, result_c, expected_c, result_c, expected_c // Added vars for Debug
+            );
+        }
+    }
+
+    #[test]
+    fn test_mul_i64_random() {
+        let mut rng = test_rng();
+        for _ in 0..100 {
+            let a = Fr::rand(&mut rng);
+            let b_val: i64 = rng.gen();
+
+            // Expected result using standard field multiplication
+            let expected_c = if b_val >= 0 {
+                let b_bigint = ArkBigInt::from(b_val as u64);
+                a * Fr::from(b_bigint)
+            } else {
+                let b_bigint = ArkBigInt::from(-b_val as u64);
+                -(a * Fr::from(b_bigint))
+            };
+
+            // Actual result using the function under test
+            let result_c = a.mul_i64::<NPLUS1>(b_val);
+
+            assert_eq!(
+                result_c, expected_c,
+                "mul_i64 failed: a = {}, b = {}\nGot:      {}\nExpected: {}",
+                a, b_val, result_c, expected_c
+            );
+        }
+    }
+
+    #[test]
+    fn test_mul_i64_min_value() {
+        // Explicitly exercise i64::MIN edge case (negation would overflow).
+        let a = Fr::from(ArkBigInt::from(5u64));
+        let b_val = i64::MIN;
+
+        let expected_c = {
+            // |i64::MIN| = 2^63
+            let b_bigint = ArkBigInt::from(1u64 << 63);
+            -(a * Fr::from(b_bigint))
+        };
+        let result_c = a.mul_i64::<NPLUS1>(b_val);
+        assert_eq!(result_c, expected_c);
+    }
+
+    #[test]
+    fn test_mul_u128_random() {
+        let mut rng = test_rng();
+        for _ in 0..100 {
+            let a = Fr::rand(&mut rng);
+            let b_val: u128 = rng.gen();
+
+            // Expected result using standard field multiplication
+            let b_bigint = ArkBigInt::from(b_val); // Convert u128 -> BigInt
+            let expected_c = a * Fr::from(b_bigint);
+
+            // Actual result using the function under test
+            let result_c = a.mul_u128::<NPLUS1, NPLUS2>(b_val);
+
+            assert_eq!(
+                result_c, expected_c,
+                "mul_u128 failed: a = {}, b = {}\nGot:      {}\nExpected: {}",
+                a, b_val, result_c, expected_c
+            );
+        }
+    }
+
+    #[test]
+    fn test_mul_i128_random() {
+        let mut rng = test_rng();
+        for _ in 0..100 {
+            let a = Fr::rand(&mut rng);
+            // Avoid i128::MIN as negation overflows
+            let b_val: i128 = rng.gen_range(i128::MIN + 1..=i128::MAX);
+
+            // Expected result using standard field multiplication
+            let expected_c = if b_val >= 0 {
+                let b_bigint = ArkBigInt::from(b_val as u128);
+                a * Fr::from(b_bigint)
+            } else {
+                let b_bigint = ArkBigInt::from((-b_val) as u128);
+                -(a * Fr::from(b_bigint))
+            };
+
+            // Actual result using the function under test
+            let result_c = a.mul_i128::<NPLUS1, NPLUS2>(b_val);
+
+            assert_eq!(
+                result_c, expected_c,
+                "mul_i128 failed: a = {}, b = {}\nGot:      {}\nExpected: {}",
+                a, b_val, result_c, expected_c
+            );
+        }
+    }
+
+    #[test]
+    fn test_mul_i128_min_value() {
+        // Explicitly exercise i128::MIN edge case (negation would overflow).
+        let a = Fr::from(ArkBigInt::from(7u64));
+        let b_val = i128::MIN;
+
+        let expected_c = {
+            // |i128::MIN| = 2^127
+            let b_bigint = ArkBigInt::from(1u128 << 127);
+            -(a * Fr::from(b_bigint))
+        };
+        let result_c = a.mul_i128::<NPLUS1, NPLUS2>(b_val);
+        assert_eq!(result_c, expected_c);
+    }
+
+    // Removed trailing-zero API tests due to API consolidation
 
     #[test]
     fn test_mont_macro_correctness() {
+        // This test succeeds only on the secp256k1 curve.
         let (is_positive, limbs) = str_to_limbs_u64(
             "111192936301596926984056301862066282284536849596023571352007112326586892541694",
         );
-        let t = Fr::from_sign_and_limbs(is_positive, &limbs);
+        // Use secp256k1::Fr here (do not use the bn254 alias `Fr` above).
+        let t = ark_test_curves::secp256k1::Fr::from_sign_and_limbs(is_positive, &limbs);
 
         let result: BigUint = t.into();
         let expected = BigUint::from_str(
@@ -897,5 +1857,28 @@ mod test {
 
         let sign_is_positive = sign != Sign::Minus;
         (sign_is_positive, limbs)
+    }
+
+    #[test]
+    fn test_from_montgomery_reduce_paths_l8_l9_match_field_mul() {
+        let mut rng = test_rng();
+        for _ in 0..200 {
+            let a = Fr::rand(&mut rng);
+            let b = Fr::rand(&mut rng);
+
+            let expected = a * b;
+
+            // Compute 8-limb raw product of Montgomery residues
+            let prod8 = a.0.mul_trunc::<4, 8>(&b.0);
+
+            // Reduce via Montgomery reduction with L = 8
+            let alt8 = Fr::montgomery_reduce_2n::<8>(prod8);
+            assert_eq!(alt8, expected, "from_montgomery_reduce L=8 mismatch");
+
+            // Zero-extend to 9 limbs and reduce with L = 9
+            let prod9 = ark_test_curves::ark_ff::BigInt::<9>::zero_extend_from::<8>(&prod8);
+            let alt9 = Fr::from_montgomery_reduce::<9, 5>(prod9);
+            assert_eq!(alt9, expected, "from_montgomery_reduce L=9 mismatch");
+        }
     }
 }

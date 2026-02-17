@@ -39,6 +39,8 @@ impl BnConfig for Config {
     type Fp12Config = Fq12Config;
     type G1Config = g1::Config;
     type G2Config = g2::Config;
+
+    type CompressedFp12Config = CompressedFq12;
 }
 
 pub type Bn254 = Bn<Config>;

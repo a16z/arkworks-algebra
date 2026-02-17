@@ -17,6 +17,7 @@ ark-ff = { workspace = true }
 ark-ec = { workspace = true }
 ark-std = { workspace = true }
 ark-r1cs-std = { workspace = true, optional = true }
+ark-serialize = { workspace = true }
 
 [dev-dependencies]
 ark-serialize = { workspace = true }
@@ -32,7 +33,6 @@ r1cs = [ "ark-r1cs-std" ]
 curve = [ "scalar_field" ]
 scalar_field = []
 asm = [ "ark-ff/asm" ]
-
 [[bench]]
 name = "bn254"
 path = "benches/bn254.rs"

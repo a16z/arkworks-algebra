@@ -13,6 +13,8 @@ members = [
     "poly",
     "test-curves",
     "test-templates",
+
+    "jolt-optimizations",
 ]
 exclude = ["curves/**"]
 resolver = "2"
@@ -34,6 +36,7 @@ include = [
 license = "MIT OR Apache-2.0"
 edition = "2021"
 rust-version = "1.75"
+keywords = ["cryptography", "zero-knowledge", "elliptic-curves", "arkworks"]
 
 [workspace.metadata.docs.rs]
 rustdoc-args = ["--html-in-header katex-header.html"]
@@ -144,14 +147,19 @@ ark-poly = { version = "0.5.0", path = "./poly", default-features = false }
 ark-serialize = { version = "0.5.0", path = "./serialize", default-features = false }
 ark-serialize-derive = { version = "0.5.0", path = "./serialize-derive" }
 ark-std = { version = "0.5.0", default-features = false }
+ark-bn254 = { path = "./curves/bn254", version = "0.5.0", features = ["curve", "scalar_field"] }
 
 ark-algebra-bench-templates = { version = "0.5.0", path = "./bench-templates", default-features = false }
 ark-algebra-test-templates = { version = "0.5.0", path = "./test-templates", default-features = false }
 ark-test-curves = { version = "0.5.0", path = "./test-curves", default-features = false }
 
+ark-r1cs-std = { version = "0.5.0", default-features = false }
+ark-relations = { version = "0.5.0", default-features = false }
+
 num-traits = { version = "0.2", default-features = false }
 num-bigint = { version = "0.4", default-features = false }
 num-integer = { version = "0.1", default-features = false }
+num-rational = { version = "0.4.2", default-features = false }
 
 arrayvec = { version = "0.7", default-features = false }
 criterion = "0.7.0"
@@ -201,3 +209,17 @@ lto = "thin"
 incremental = true
 debug-assertions = true
 debug = true
+
+[patch.crates-io]
+ark-ec = { path = "./ec" }
+ark-ff = { path = "./ff" }
+ark-ff-asm = { path = "./ff-asm" }
+ark-poly = { path = "./poly" }
+ark-serialize = { path = "./serialize" }
+ark-algebra-test-templates = { path = "./test-templates" }
+ark-algebra-bench-templates = { path = "./bench-templates" }
+ark-test-curves = { path = "./test-curves" }
+ark-bn254 = { path = "./curves/bn254" }
+ark-std = { git = "https://github.com/arkworks-rs/std/" }
+ark-r1cs-std = { git = "https://github.com/arkworks-rs/r1cs-std" }
+ark-relations = { git = "https://github.com/arkworks-rs/snark" }

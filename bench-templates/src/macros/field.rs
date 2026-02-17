@@ -6,6 +6,7 @@ macro_rules! f_bench {
             mod [<$F:lower>] {
                 use super::*;
                 use ark_ff::{Field, PrimeField, UniformRand};
+                use ark_std::rand::RngCore;
                 field_common!($bench_group_name, $F);
                 sqrt!($bench_group_name, $F);
                 prime_field!($bench_group_name, $F);
@@ -278,7 +279,7 @@ macro_rules! sqrt {
 macro_rules! prime_field {
     ($bench_group_name:expr, $F:ident) => {
         fn bigint(c: &mut $crate::criterion::Criterion) {
-            use ark_ff::{BigInteger, PrimeField};
+            use ark_ff::{BigInteger, PrimeField, Zero};
             type BigInt = <$F as PrimeField>::BigInt;
             const SAMPLES: usize = 1000;
 
@@ -402,6 +403,14 @@ macro_rules! prime_field {
                 b.iter(|| {
                     i = (i + 1) % SAMPLES;
                     f[i].into_bigint()
+                })
+            });
+            let u64s = (0..SAMPLES).map(|_| rng.next_u64()).collect::<Vec<_>>();
+            conversions.bench_function("From u64", |b| {
+                let mut i = 0;
+                b.iter(|| {
+                    i = (i + 1) % SAMPLES;
+                    <$F>::from(u64s[i])
                 })
             });
             conversions.finish()

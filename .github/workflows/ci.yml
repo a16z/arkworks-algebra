@@ -381,18 +381,22 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
             command: check
-            args: "--examples --workspace \
+            args: "--examples --workspace --no-default-features \
                   --exclude ark-algebra-test-templates \
                   --exclude ark-algebra-bench-templates \
                   --exclude ark-poly-benches \
+                  --exclude ark-curve-constraint-tests \
+                  --exclude jolt-optimizations \
                   --target aarch64-unknown-none"
 
       - name: build
         uses: actions-rs/cargo@v1
         with:
             command: build
-            args: "--workspace \
+            args: "--workspace --no-default-features \
                   --exclude ark-algebra-test-templates \
                   --exclude ark-algebra-bench-templates \
                   --exclude ark-poly-benches \
+                  --exclude ark-curve-constraint-tests \
+                  --exclude jolt-optimizations \
                   --target aarch64-unknown-none"

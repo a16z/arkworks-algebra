@@ -179,3 +179,15 @@ fn mul_by_char<P: BnConfig>(r: G2Affine<P>) -> G2Affine<P> {
 
     s
 }
+
+impl<'a, P: BnConfig> From<&'a G2Prepared<P>> for G2Prepared<P> {
+    fn from(other: &'a G2Prepared<P>) -> Self {
+        other.clone()
+    }
+}
+
+impl<P: BnConfig> AsRef<G2Prepared<P>> for G2Prepared<P> {
+    fn as_ref(&self) -> &G2Prepared<P> {
+        self
+    }
+}

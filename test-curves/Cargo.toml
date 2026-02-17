@@ -13,7 +13,7 @@ license.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 metadata.docs.rs.workspace = true
-metadata.release.workspace = true
+package.metadata.release.workspace = true
 
 [lints]
 workspace = true
@@ -22,11 +22,14 @@ workspace = true
 ark-std = { workspace = true, default-features = false }
 ark-ff = { workspace = true, default-features = false }
 ark-ec = { workspace = true, default-features = false }
+ark-ff-macros = { workspace = true, default-features = false }
+ark-serialize  = { workspace = true, default-features = false }
 
 [dev-dependencies]
 ark-serialize = { workspace = true, default-features = false }
 ark-algebra-test-templates = { workspace = true, default-features = false }
 ark-algebra-bench-templates = { workspace = true, default-features = false }
+criterion = { version = "0.5", features = ["html_reports"] }
 
 [features]
 default = []
@@ -52,7 +55,16 @@ bn384_small_two_adicity_curve = [
     "bn384_small_two_adicity_base_field",
 ]
 
+bn254_scalar_field = []
+bn254_base_field = []
+bn254 = [ "bn254_scalar_field", "bn254_base_field" ]
+
 secp256k1 = []
+
+[[bench]]
+name = "compressed_pairing"
+path = "benches/compressed_pairing.rs"
+harness = false
 
 [[bench]]
 name = "bls12_381"
@@ -77,4 +89,19 @@ harness = false
 [[bench]]
 name = "mnt6_753"
 path = "benches/mnt6_753.rs"
+harness = false
+
+[[bench]]
+name = "small_mul"
+path = "benches/small_mul.rs"
+harness = false
+
+[[bench]]
+name = "bn254"
+path = "benches/bn254.rs"
+harness = false
+
+[[bench]]
+name = "bigint"
+path = "benches/bigint.rs"
 harness = false

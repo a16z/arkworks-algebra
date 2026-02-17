@@ -57,6 +57,13 @@ pub trait PrimeField:
     /// Converts an element of the prime field into an integer in the range 0..(p - 1).
     fn into_bigint(self) -> Self::BigInt;
 
+    /// Construct a prime field element from an integer in the range 0..(p - 1) (no reductions)
+    fn from_bigint_unchecked(repr: Self::BigInt) -> Option<Self>;
+
+    /// Creates a field element from a `u64`.
+    /// Returns `None` if the `u64` is larger than or equal to the modulus.
+    fn from_u64<const NPLUS1: usize>(val: u64) -> Option<Self>;
+
     /// Reads bytes in big-endian, and converts them to a field element.
     /// If the integer represented by `bytes` is larger than the modulus `p`, this method
     /// performs the appropriate reduction.

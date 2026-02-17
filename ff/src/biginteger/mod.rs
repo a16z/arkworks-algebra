@@ -2,6 +2,11 @@ use crate::{
     bits::{BitIteratorBE, BitIteratorLE},
     const_for, UniformRand,
 };
+
+#[cfg(feature = "allocative")]
+use allocative::Allocative;
+
+#[allow(unused)]
 use ark_ff_macros::unroll_for_loops;
 use ark_serialize::{
     CanonicalDeserialize, CanonicalSerialize, Compress, SerializationError, Valid, Validate,
@@ -12,14 +17,15 @@ use ark_std::{
     fmt::{Debug, Display, UpperHex},
     io::{Read, Write},
     ops::{
-        BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not, Shl, ShlAssign, Shr,
-        ShrAssign,
+        Add, AddAssign, BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not, Shl,
+        ShlAssign, Shr, ShrAssign, Sub, SubAssign,
     },
     rand::{
         distributions::{Distribution, Standard},
         Rng,
     },
     str::FromStr,
+    vec,
     vec::Vec,
     Zero,
 };
@@ -29,8 +35,14 @@ use zeroize::Zeroize;
 #[macro_use]
 pub mod arithmetic;
 
+pub mod signed;
+pub use signed::{SignedBigInt, S128, S192, S256, S64};
+
+pub mod signed_hi_32;
+pub use signed_hi_32::{SignedBigIntHi32, S160, S224, S96};
+
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
-#[must_use]
+#[cfg_attr(feature = "allocative", derive(Allocative))]
 pub struct BigInt<const N: usize>(pub [u64; N]);
 
 impl<const N: usize> Zeroize for BigInt<N> {
@@ -41,14 +53,12 @@ impl<const N: usize> Zeroize for BigInt<N> {
 }
 
 impl<const N: usize> Default for BigInt<N> {
-    #[inline]
     fn default() -> Self {
         Self([0u64; N])
     }
 }
 
 impl<const N: usize> CanonicalSerialize for BigInt<N> {
-    #[inline]
     fn serialize_with_mode<W: Write>(
         &self,
         writer: W,
@@ -57,29 +67,24 @@ impl<const N: usize> CanonicalSerialize for BigInt<N> {
         self.0.serialize_with_mode(writer, compress)
     }
 
-    #[inline]
     fn serialized_size(&self, compress: Compress) -> usize {
         self.0.serialized_size(compress)
     }
 }
 
 impl<const N: usize> Valid for BigInt<N> {
-    const TRIVIAL_CHECK: bool = true;
-
-    #[inline]
     fn check(&self) -> Result<(), SerializationError> {
         self.0.check()
     }
 }
 
 impl<const N: usize> CanonicalDeserialize for BigInt<N> {
-    #[inline]
     fn deserialize_with_mode<R: Read>(
         reader: R,
         compress: Compress,
         validate: Validate,
     ) -> Result<Self, SerializationError> {
-        Ok(BigInt(<[u64; N]>::deserialize_with_mode(
+        Ok(BigInt::<N>(<[u64; N]>::deserialize_with_mode(
             reader, compress, validate,
         )?))
     }
@@ -123,7 +128,7 @@ macro_rules! const_modulo {
         // Stupid slow base-2 long division taken from
         // https://en.wikipedia.org/wiki/Division_algorithm
         assert!(!$divisor.const_is_zero());
-        let mut remainder = Self::new([0u64; N]);
+        let mut remainder = BigInt::<N>::new([0u64; N]);
         let mut i = ($a.num_bits() - 1) as isize;
         let mut carry;
         while i >= 0 {
@@ -140,18 +145,45 @@ macro_rules! const_modulo {
     }};
 }
 
+#[doc(hidden)]
+macro_rules! const_quotient {
+    ($a:expr, $divisor:expr) => {{
+        // Binary long division computing the quotient
+        assert!(!$divisor.const_is_zero());
+        let mut remainder = BigInt::<N>::new([0u64; N]);
+        let mut quotient = BigInt::<N>::new([0u64; N]); // Initialize quotient
+        let mut i = ($a.num_bits() - 1) as isize;
+        let mut carry;
+        while i >= 0 {
+            // Left shift remainder by 1
+            (remainder, carry) = remainder.const_mul2_with_carry();
+            // Bring down the next bit from dividend $a$ into remainder LSB
+            remainder.0[0] |= $a.get_bit(i as usize) as u64;
+
+            // If remainder >= divisor
+            if remainder.const_geq($divisor) || carry {
+                // Subtract divisor from remainder
+                let (r, borrow) = remainder.const_sub_with_borrow($divisor);
+                remainder = r;
+                assert!(borrow == carry);
+                // Manually set the i-th bit of the quotient
+                quotient.0[(i as usize) / 64] |= 1u64 << ((i as usize) % 64);
+            }
+            i -= 1;
+        }
+        quotient // Return the quotient
+    }};
+}
+
 impl<const N: usize> BigInt<N> {
-    #[inline]
     pub const fn new(value: [u64; N]) -> Self {
         Self(value)
     }
 
-    #[inline]
     pub const fn zero() -> Self {
         Self([0u64; N])
     }
 
-    #[inline]
     pub const fn one() -> Self {
         let mut one = Self::zero();
         one.0[0] = 1;
@@ -159,19 +191,16 @@ impl<const N: usize> BigInt<N> {
     }
 
     #[doc(hidden)]
-    #[inline]
     pub const fn const_is_even(&self) -> bool {
         self.0[0] % 2 == 0
     }
 
     #[doc(hidden)]
-    #[inline]
     pub const fn const_is_odd(&self) -> bool {
         self.0[0] % 2 == 1
     }
 
     #[doc(hidden)]
-    #[inline]
     pub const fn mod_4(&self) -> u8 {
         // To compute n % 4, we need to simply look at the
         // 2 least significant bits of n, and check their value mod 4.
@@ -188,7 +217,6 @@ impl<const N: usize> BigInt<N> {
     /// Compute a right shift of `self`
     /// This is equivalent to a (saturating) division by 2.
     #[doc(hidden)]
-    #[inline]
     pub const fn const_shr(&self) -> Self {
         let mut result = *self;
         let mut t = 0;
@@ -202,8 +230,7 @@ impl<const N: usize> BigInt<N> {
         result
     }
 
-    #[inline]
-    const fn const_geq(&self, other: &Self) -> bool {
+    pub(crate) const fn const_geq(&self, other: &Self) -> bool {
         const_for!((i in 0..N) {
             let a = self.0[N - i - 1];
             let b = other.0[N - i - 1];
@@ -218,7 +245,6 @@ impl<const N: usize> BigInt<N> {
 
     /// Compute the largest integer `s` such that `self = 2**s * t + 1` for odd `t`.
     #[doc(hidden)]
-    #[inline]
     pub const fn two_adic_valuation(mut self) -> u32 {
         assert!(self.const_is_odd());
         let mut two_adicity = 0;
@@ -235,7 +261,6 @@ impl<const N: usize> BigInt<N> {
     /// Compute the smallest odd integer `t` such that `self = 2**s * t + 1` for some
     /// integer `s = self.two_adic_valuation()`.
     #[doc(hidden)]
-    #[inline]
     pub const fn two_adic_coefficient(mut self) -> Self {
         assert!(self.const_is_odd());
         // Since `self` is odd, we can always subtract one
@@ -252,7 +277,6 @@ impl<const N: usize> BigInt<N> {
     /// That is, if `self.is_odd()`, compute `(self - 1)/2`.
     /// Else, compute `self/2`.
     #[doc(hidden)]
-    #[inline]
     pub const fn divide_by_2_round_down(mut self) -> Self {
         if self.const_is_odd() {
             self.0[0] -= 1;
@@ -261,10 +285,203 @@ impl<const N: usize> BigInt<N> {
     }
 
     /// Find the number of bits in the binary decomposition of `self`.
+    /// Assume that `self` fills out all `N-1` low limbs
     #[doc(hidden)]
-    #[inline]
     pub const fn const_num_bits(self) -> u32 {
         ((N - 1) * 64) as u32 + (64 - self.0[N - 1].leading_zeros())
+    }
+
+    /// Compute `2^((N-1) * 64) * 2^exp`
+    /// Assume that `exp < 64`
+    #[doc(hidden)]
+    pub const fn pow_2(exp: u32) -> Self {
+        assert!(exp < 64);
+        let mut res = Self::zero();
+        res.0[N - 1] = 1;
+        let mut i = 0;
+        while i < exp {
+            res.0[N - 1] = res.0[N - 1] << 1;
+            i += 1;
+        }
+        res
+    }
+
+    /// Compute the number of spare (i.e. leading zero) bits in the big integer.
+    /// Assumes that `self` fills out all `N-1` low limbs.
+    /// This means the number of spare bits is determined by the
+    /// leading zeros in the most significant limb.
+    #[doc(hidden)]
+    pub const fn num_spare_bits(self) -> u32 {
+        // Fast path: directly use the intrinsic on the most significant limb
+        self.0[N - 1].leading_zeros()
+    }
+
+    /// Truncated-width addition: compute self + other into P limbs.
+    ///
+    /// - Semantics: returns the low P limbs of the sum; higher limbs are discarded.
+    /// - Precondition (debug-only): right operand width M must be <= P.
+    /// - Debug contract: panics in debug if an addition carry would spill beyond P limbs.
+    #[inline]
+    pub fn add_trunc<const M: usize, const P: usize>(&self, other: &BigInt<M>) -> BigInt<P> {
+        debug_assert!(M <= P, "add_trunc: right operand wider than result width P");
+        let mut acc = BigInt::<P>::zero();
+        let copy_len = core::cmp::min(P, N);
+        acc.0[..copy_len].copy_from_slice(&self.0[..copy_len]);
+        acc.add_assign_trunc::<M>(other);
+        acc
+    }
+
+    /// Truncated-width subtraction: compute self - other into P limbs.
+    ///
+    /// - Semantics: returns the low P limbs of the difference; higher borrow is discarded.
+    /// - Precondition (debug-only): right operand width M must be <= P.
+    /// - Debug contract: panics in debug if a borrow would spill beyond P limbs.
+    #[inline]
+    pub fn sub_trunc<const M: usize, const P: usize>(&self, other: &BigInt<M>) -> BigInt<P> {
+        debug_assert!(M <= P, "sub_trunc: right operand wider than result width P");
+        let mut acc = BigInt::<P>::zero();
+        let copy_len = core::cmp::min(P, N);
+        acc.0[..copy_len].copy_from_slice(&self.0[..copy_len]);
+        acc.sub_assign_trunc::<M>(other);
+        acc
+    }
+
+    /// Truncated-width multiplication: compute self * other and fit into P limbs; overflow is ignored.
+    #[inline]
+    pub fn mul_trunc<const M: usize, const P: usize>(&self, other: &BigInt<M>) -> BigInt<P> {
+        let mut res = BigInt::<P>::zero();
+        // Use core fused multiply engine specialized on M for unrolling
+        self.fm_limbs_into::<M, P>(&other.0, &mut res, false);
+        res
+    }
+
+    /// Truncated-width addition that mutates self: self += other, keeping N limbs (self's width).
+    ///
+    /// - Semantics: computes (self + other) mod 2^(64*N).
+    /// - Precondition (debug-only): right operand width M must be <= N.
+    /// - Debug contract: panics in debug if a carry would spill beyond N limbs.
+    #[inline]
+    #[unroll_for_loops(9)]
+    pub fn add_assign_trunc<const M: usize>(&mut self, other: &BigInt<M>) {
+        debug_assert!(
+            M <= N,
+            "add_assign_trunc: right operand wider than self width N"
+        );
+        let mut carry = 0u64;
+        for i in 0..N {
+            let rhs = if i < M { other.0[i] } else { 0 };
+            self.0[i] = adc!(self.0[i], rhs, &mut carry);
+        }
+        debug_assert!(
+            carry == 0,
+            "add_assign_trunc overflow: carry beyond N limbs"
+        );
+    }
+
+    /// Truncated-width subtraction that mutates self: self -= other, keeping N limbs (self's width).
+    ///
+    /// Semantics: computes (self - other) mod 2^(64*N).
+    /// Precondition (debug-only): right operand width M must be <= N.
+    /// Debug contract: panics in debug if a borrow would spill beyond N limbs.
+    #[inline]
+    #[unroll_for_loops(9)]
+    pub fn sub_assign_trunc<const M: usize>(&mut self, other: &BigInt<M>) {
+        debug_assert!(
+            M <= N,
+            "sub_assign_trunc: right operand wider than self width N"
+        );
+        let mut borrow = 0u64;
+        for i in 0..N {
+            let rhs = if i < M { other.0[i] } else { 0 };
+            self.0[i] = sbb!(self.0[i], rhs, &mut borrow);
+        }
+        debug_assert!(
+            borrow == 0,
+            "sub_assign_trunc underflow: borrow beyond N limbs"
+        );
+    }
+
+    /// Truncated-width multiplication that mutates self: self = (self * other) mod 2^(64*N).
+    /// Keeps exactly N limbs (self's width). Overflow beyond N limbs is ignored.
+    #[inline]
+    pub fn mul_assign_trunc<const M: usize>(&mut self, other: &BigInt<M>) {
+        // Fast paths
+        if self.is_zero() || other.is_zero() {
+            for i in 0..N {
+                self.0[i] = 0;
+            }
+            return;
+        }
+        let left = *self; // snapshot original multiplicand
+                          // zero self to use as accumulator buffer
+        for i in 0..N {
+            self.0[i] = 0;
+        }
+        // Accumulate left * other directly into self within width N; propagate carries within N
+        left.fm_limbs_into::<M, N>(&other.0, self, true);
+    }
+
+    /// Fused multiply-add with truncation: acc += self * other, fitting into P limbs; overflow is ignored.
+    /// This is a generic version for arbitrary limb widths of `self` and `other`.
+    #[inline]
+    pub fn fmadd_trunc<const M: usize, const P: usize>(
+        &self,
+        other: &BigInt<M>,
+        acc: &mut BigInt<P>,
+    ) {
+        let i_limit = core::cmp::min(N, P);
+        for i in 0..i_limit {
+            let mut carry = 0u64;
+            let j_limit = core::cmp::min(M, P - i);
+            for j in 0..j_limit {
+                acc.0[i + j] = mac_with_carry!(acc.0[i + j], self.0[i], other.0[j], &mut carry);
+            }
+            if i + j_limit < P {
+                let (new_val, _of) = acc.0[i + j_limit].overflowing_add(carry);
+                acc.0[i + j_limit] = new_val;
+            }
+        }
+    }
+
+    /// Accumulate with a compile-time-known count of multiplier limbs M to enable unrolling.
+    #[inline]
+    #[unroll_for_loops(10)]
+    pub(crate) fn fm_limbs_into<const M: usize, const P: usize>(
+        &self,
+        other_limbs: &[u64; M],
+        acc: &mut BigInt<P>,
+        carry_propagate: bool,
+    ) {
+        for j in 0..M {
+            let mul_limb = other_limbs[j];
+            if mul_limb == 0 {
+                // Skip zero multiplier limb
+                // (cannot use `continue` here due to unroll macro limitations)
+            } else {
+                let base = j;
+                let mut carry = 0u64;
+                for i in 0..N {
+                    let idx = base + i;
+                    if idx < P {
+                        acc.0[idx] = mac_with_carry!(acc.0[idx], self.0[i], mul_limb, &mut carry);
+                    }
+                }
+                let next = base + N;
+                if next < P {
+                    let (v, mut of) = acc.0[next].overflowing_add(carry);
+                    acc.0[next] = v;
+                    if carry_propagate && of {
+                        let mut k = next + 1;
+                        while of && k < P {
+                            let (nv, nof) = acc.0[k].overflowing_add(1);
+                            acc.0[k] = nv;
+                            of = nof;
+                            k += 1;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[inline]
@@ -272,7 +489,7 @@ impl<const N: usize> BigInt<N> {
         let mut borrow = 0;
 
         const_for!((i in 0..N) {
-            borrow = arithmetic::sbb(&mut self.0[i], other.0[i], borrow);
+            self.0[i] = sbb!(self.0[i], other.0[i], &mut borrow);
         });
 
         (self, borrow != 0)
@@ -283,14 +500,13 @@ impl<const N: usize> BigInt<N> {
         let mut carry = 0;
 
         crate::const_for!((i in 0..N) {
-            carry = arithmetic::adc(&mut self.0[i], other.0[i], carry);
+            self.0[i] = adc!(self.0[i], other.0[i], &mut carry);
         });
 
         (self, carry != 0)
     }
 
-    #[inline]
-    const fn const_mul2_with_carry(mut self) -> (Self, bool) {
+    pub(crate) const fn const_mul2_with_carry(mut self) -> (Self, bool) {
         let mut last = 0;
         crate::const_for!((i in 0..N) {
             let a = self.0[i];
@@ -302,7 +518,6 @@ impl<const N: usize> BigInt<N> {
         (self, last != 0)
     }
 
-    #[inline]
     pub(crate) const fn const_is_zero(&self) -> bool {
         let mut is_zero = true;
         crate::const_for!((i in 0..N) {
@@ -313,18 +528,49 @@ impl<const N: usize> BigInt<N> {
 
     /// Computes the Montgomery R constant modulo `self`.
     #[doc(hidden)]
-    #[inline]
     pub const fn montgomery_r(&self) -> Self {
-        let two_pow_n_times_64 = crate::const_helpers::RBuffer([0u64; N], 1);
+        let two_pow_n_times_64 = crate::const_helpers::RBuffer::<N>([0u64; N], 1);
         const_modulo!(two_pow_n_times_64, self)
     }
 
     /// Computes the Montgomery R2 constant modulo `self`.
     #[doc(hidden)]
-    #[inline]
     pub const fn montgomery_r2(&self) -> Self {
-        let two_pow_n_times_64_square = crate::const_helpers::R2Buffer([0u64; N], [0u64; N], 1);
+        let two_pow_n_times_64_square =
+            crate::const_helpers::R2Buffer::<N>([0u64; N], [0u64; N], 1);
         const_modulo!(two_pow_n_times_64_square, self)
+    }
+
+    /// Zero-extend a smaller BigInt<M> into BigInt<N> (little-endian limbs).
+    /// Debug-asserts that M <= N.
+    #[inline]
+    pub fn zero_extend_from<const M: usize>(smaller: &BigInt<M>) -> BigInt<N> {
+        debug_assert!(
+            M <= N,
+            "cannot zero-extend: source has more limbs than destination"
+        );
+        let mut limbs = [0u64; N];
+        let copy_len = if M < N { M } else { N };
+        limbs[..copy_len].copy_from_slice(&smaller.0[..copy_len]);
+        BigInt::<N>(limbs)
+    }
+}
+
+impl<const N: usize> Zero for BigInt<N> {
+    #[inline]
+    fn zero() -> Self {
+        Self::zero()
+    }
+
+    #[inline]
+    fn is_zero(&self) -> bool {
+        self.0.iter().all(|&limb| limb == 0)
+    }
+}
+
+impl<const N: usize> From<[u64; N]> for BigInt<N> {
+    fn from(limbs: [u64; N]) -> Self {
+        BigInt(limbs)
     }
 }
 
@@ -356,9 +602,10 @@ impl<const N: usize> BigInteger for BigInt<N> {
     }
 
     #[inline]
+    #[allow(unused)]
     fn mul2(&mut self) -> bool {
-        #[cfg(target_arch = "x86_64")]
-        #[allow(unused_unsafe, unsafe_code)]
+        #[cfg(all(target_arch = "x86_64", feature = "asm"))]
+        #[allow(unsafe_code)]
         {
             let mut carry = 0;
 
@@ -372,7 +619,7 @@ impl<const N: usize> BigInteger for BigInt<N> {
             carry != 0
         }
 
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(not(all(target_arch = "x86_64", feature = "asm")))]
         {
             let mut last = 0;
             for i in 0..N {
@@ -403,6 +650,7 @@ impl<const N: usize> BigInteger for BigInt<N> {
 
         if n > 0 {
             let mut t = 0;
+            #[allow(unused)]
             for i in 0..N {
                 let a = &mut self.0[i];
                 let t2 = *a >> (64 - n);
@@ -414,19 +662,106 @@ impl<const N: usize> BigInteger for BigInt<N> {
     }
 
     #[inline]
+    #[unroll_for_loops(8)]
+    fn mul_u64_in_place(&mut self, other: u64) {
+        // special cases for 0 and 1
+        // if other == 0 || self.is_zero() {
+        //     *self = Self::zero();
+        //     return;
+        // } else if other == 1 {
+        //     return;
+        // }
+        // Use the same low-level multiply-accumulate primitive that already
+        // benefits from x86 optimizations in this crate.
+        let mut carry = 0u64;
+        for i in 0..N {
+            self.0[i] = mac_with_carry!(0u64, self.0[i], other, &mut carry);
+        }
+        // Overflow is ignored by contract; assert in debug to catch misuse.
+        debug_assert!(carry == 0, "Overflow in BigInt::mul_u64_in_place");
+    }
+
+    #[inline]
+    #[unroll_for_loops(8)]
+    fn mul_u64_w_carry<const NPLUS1: usize>(&self, other: u64) -> BigInt<NPLUS1> {
+        // ensure NPLUS1 is the correct size
+        debug_assert!(NPLUS1 == N + 1);
+        // special cases for 0 and 1
+        // if other == 0 || self.is_zero() {
+        //     return BigInt::<NPLUS1>::zero();
+        // } else if other == 1 {
+        //     let mut res = BigInt::<NPLUS1>::zero();
+        //     for i in 0..N {
+        //         res.0[i] = self.0[i];
+        //     }
+        //     return res;
+        // }
+        // Use the same multiply-accumulate primitive and capture the final carry
+        let mut res = BigInt::<NPLUS1>::zero();
+        let mut carry = 0u64;
+        for i in 0..N {
+            res.0[i] = mac_with_carry!(0u64, self.0[i], other, &mut carry);
+        }
+        res.0[N] = carry;
+        res
+    }
+
+    #[inline]
+    #[unroll_for_loops(8)]
+    fn mul_u128_w_carry<const NPLUS1: usize, const NPLUS2: usize>(
+        &self,
+        other: u128,
+    ) -> BigInt<NPLUS2> {
+        // NPLUS1 is N + 1, NPLUS2 is N + 2
+        debug_assert!(NPLUS1 == N + 1);
+        debug_assert!(NPLUS2 == N + 2);
+        // special cases for 0 and 1
+        if other == 0 || self.is_zero() {
+            return BigInt::<NPLUS2>::zero();
+        } else if other == 1 {
+            let mut res = BigInt::<NPLUS2>::zero();
+            for i in 0..N {
+                res.0[i] = self.0[i];
+            }
+            return res;
+        }
+        // Split other into two u64s and accumulate directly into the result buffer.
+        let other_lo = other as u64;
+        let other_hi = (other >> 64) as u64;
+
+        let mut res = BigInt::<NPLUS2>::zero();
+
+        // First pass: res[i] += self[i] * other_lo
+        let mut carry = 0u64;
+        for i in 0..N {
+            res.0[i] = mac_with_carry!(res.0[i], self.0[i], other_lo, &mut carry);
+        }
+        res.0[N] = carry;
+
+        // Second pass: res[i+1] += self[i] * other_hi
+        let mut carry2 = 0u64;
+        for i in 0..N {
+            res.0[i + 1] = mac_with_carry!(res.0[i + 1], self.0[i], other_hi, &mut carry2);
+        }
+        res.0[N + 1] = carry2;
+
+        res
+    }
+
+    #[inline]
     fn mul(&self, other: &Self) -> (Self, Self) {
         if self.is_zero() || other.is_zero() {
             let zero = Self::zero();
             return (zero, zero);
         }
 
-        let mut r = crate::const_helpers::MulBuffer::zeroed();
+        let mut r = crate::const_helpers::MulBuffer::<N>::zeroed();
 
         let mut carry = 0;
 
         for i in 0..N {
             for j in 0..N {
-                r[i + j] = arithmetic::mac_with_carry(r[i + j], self.0[i], other.0[j], &mut carry);
+                r[i + j] = mac_with_carry!(r[i + j], self.0[i], other.0[j], &mut carry);
             }
             r.b1[i] = carry;
             carry = 0;
@@ -446,8 +781,7 @@ impl<const N: usize> BigInteger for BigInt<N> {
 
         for i in 0..N {
             for j in 0..(N - i) {
-                res.0[i + j] =
-                    arithmetic::mac_with_carry(res.0[i + j], self.0[i], other.0[j], &mut carry);
+                res.0[i + j] = mac_with_carry!(res.0[i + j], self.0[i], other.0[j], &mut carry);
             }
             carry = 0;
         }
@@ -488,6 +822,7 @@ impl<const N: usize> BigInteger for BigInt<N> {
 
         if n > 0 {
             let mut t = 0;
+            #[allow(unused)]
             for i in 0..N {
                 let a = &mut self.0[N - i - 1];
                 let t2 = *a << (64 - n);
@@ -506,11 +841,6 @@ impl<const N: usize> BigInteger for BigInt<N> {
     #[inline]
     fn is_even(&self) -> bool {
         !self.is_odd()
-    }
-
-    #[inline]
-    fn is_zero(&self) -> bool {
-        self.0.iter().all(Zero::is_zero)
     }
 
     #[inline]
@@ -545,7 +875,6 @@ impl<const N: usize> BigInteger for BigInt<N> {
         Self::from_bits_le(&bits)
     }
 
-    #[inline]
     fn from_bits_le(bits: &[bool]) -> Self {
         let mut res = Self::zero();
         for (bits64, res_i) in bits.chunks(64).zip(&mut res.0) {
@@ -565,26 +894,28 @@ impl<const N: usize> BigInteger for BigInt<N> {
 
     #[inline]
     fn to_bytes_le(&self) -> Vec<u8> {
-        self.0.iter().flat_map(|&limb| limb.to_le_bytes()).collect()
+        let array_map = self.0.iter().map(|limb| limb.to_le_bytes());
+        let mut res = Vec::with_capacity(N * 8);
+        for limb in array_map {
+            res.extend_from_slice(&limb);
+        }
+        res
     }
 }
 
 impl<const N: usize> UpperHex for BigInt<N> {
-    #[inline]
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{:016X}", BigUint::from(*self))
     }
 }
 
 impl<const N: usize> Debug for BigInt<N> {
-    #[inline]
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{:?}", BigUint::from(*self))
     }
 }
 
 impl<const N: usize> Display for BigInt<N> {
-    #[inline]
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}", BigUint::from(*self))
     }
@@ -606,8 +937,10 @@ impl<const N: usize> Ord for BigInt<N> {
         }
         #[cfg(not(target_arch = "x86_64"))]
         for (a, b) in self.0.iter().rev().zip(other.0.iter().rev()) {
-            if let order @ (Ordering::Less | Ordering::Greater) = a.cmp(b) {
-                return order;
+            if a < b {
+                return Ordering::Less;
+            } else if a > b {
+                return Ordering::Greater;
             }
         }
         Ordering::Equal
@@ -622,9 +955,12 @@ impl<const N: usize> PartialOrd for BigInt<N> {
 }
 
 impl<const N: usize> Distribution<BigInt<N>> for Standard {
-    #[inline]
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> BigInt<N> {
-        BigInt([(); N].map(|_| rng.gen()))
+        let mut res = [0u64; N];
+        for item in res.iter_mut() {
+            *item = rng.gen();
+        }
+        BigInt::<N>(res)
     }
 }
 
@@ -642,6 +978,18 @@ impl<const N: usize> AsRef<[u64]> for BigInt<N> {
     }
 }
 
+impl<const N: usize> From<u128> for BigInt<N> {
+    #[inline]
+    fn from(val: u128) -> BigInt<N> {
+        let mut repr = Self::default();
+        repr.0[0] = val as u64;
+        if N > 1 {
+            repr.0[1] = (val >> 64) as u64;
+        }
+        repr
+    }
+}
+
 impl<const N: usize> From<u64> for BigInt<N> {
     #[inline]
     fn from(val: u64) -> BigInt<N> {
@@ -655,7 +1003,7 @@ impl<const N: usize> From<u32> for BigInt<N> {
     #[inline]
     fn from(val: u32) -> BigInt<N> {
         let mut repr = Self::default();
-        repr.0[0] = val.into();
+        repr.0[0] = u64::from(val);
         repr
     }
 }
@@ -664,7 +1012,7 @@ impl<const N: usize> From<u16> for BigInt<N> {
     #[inline]
     fn from(val: u16) -> BigInt<N> {
         let mut repr = Self::default();
-        repr.0[0] = val.into();
+        repr.0[0] = u64::from(val);
         repr
     }
 }
@@ -673,7 +1021,7 @@ impl<const N: usize> From<u8> for BigInt<N> {
     #[inline]
     fn from(val: u8) -> BigInt<N> {
         let mut repr = Self::default();
-        repr.0[0] = val.into();
+        repr.0[0] = u64::from(val);
         repr
     }
 }
@@ -691,11 +1039,15 @@ impl<const N: usize> TryFrom<BigUint> for BigInt<N> {
         } else {
             let mut limbs = [0u64; N];
 
-            bytes.chunks(8).enumerate().for_each(|(i, chunk)| {
-                let mut chunk_padded = [0u8; 8];
-                chunk_padded[..chunk.len()].copy_from_slice(chunk);
-                limbs[i] = u64::from_le_bytes(chunk_padded)
-            });
+            bytes
+                .chunks(8)
+                .into_iter()
+                .enumerate()
+                .for_each(|(i, chunk)| {
+                    let mut chunk_padded = [0u8; 8];
+                    chunk_padded[..chunk.len()].copy_from_slice(chunk);
+                    limbs[i] = u64::from_le_bytes(chunk_padded)
+                });
 
             Ok(Self(limbs))
         }
@@ -732,7 +1084,6 @@ impl<const N: usize> From<BigInt<N>> for num_bigint::BigInt {
 }
 
 impl<B: Borrow<Self>, const N: usize> BitXorAssign<B> for BigInt<N> {
-    #[inline]
     fn bitxor_assign(&mut self, rhs: B) {
         (0..N).for_each(|i| self.0[i] ^= rhs.borrow().0[i])
     }
@@ -741,7 +1092,6 @@ impl<B: Borrow<Self>, const N: usize> BitXorAssign<B> for BigInt<N> {
 impl<B: Borrow<Self>, const N: usize> BitXor<B> for BigInt<N> {
     type Output = Self;
 
-    #[inline]
     fn bitxor(mut self, rhs: B) -> Self::Output {
         self ^= rhs;
         self
@@ -749,7 +1099,6 @@ impl<B: Borrow<Self>, const N: usize> BitXor<B> for BigInt<N> {
 }
 
 impl<B: Borrow<Self>, const N: usize> BitAndAssign<B> for BigInt<N> {
-    #[inline]
     fn bitand_assign(&mut self, rhs: B) {
         (0..N).for_each(|i| self.0[i] &= rhs.borrow().0[i])
     }
@@ -758,7 +1107,6 @@ impl<B: Borrow<Self>, const N: usize> BitAndAssign<B> for BigInt<N> {
 impl<B: Borrow<Self>, const N: usize> BitAnd<B> for BigInt<N> {
     type Output = Self;
 
-    #[inline]
     fn bitand(mut self, rhs: B) -> Self::Output {
         self &= rhs;
         self
@@ -766,7 +1114,6 @@ impl<B: Borrow<Self>, const N: usize> BitAnd<B> for BigInt<N> {
 }
 
 impl<B: Borrow<Self>, const N: usize> BitOrAssign<B> for BigInt<N> {
-    #[inline]
     fn bitor_assign(&mut self, rhs: B) {
         (0..N).for_each(|i| self.0[i] |= rhs.borrow().0[i])
     }
@@ -775,7 +1122,6 @@ impl<B: Borrow<Self>, const N: usize> BitOrAssign<B> for BigInt<N> {
 impl<B: Borrow<Self>, const N: usize> BitOr<B> for BigInt<N> {
     type Output = Self;
 
-    #[inline]
     fn bitor(mut self, rhs: B) -> Self::Output {
         self |= rhs;
         self
@@ -789,7 +1135,6 @@ impl<const N: usize> ShrAssign<u32> for BigInt<N> {
     /// operation does *not* return an underflow error if the number of bits
     /// shifted is larger than N * 64. Instead the result will be saturated to
     /// zero.
-    #[inline]
     fn shr_assign(&mut self, mut rhs: u32) {
         if rhs >= (64 * N) as u32 {
             *self = Self::from(0u64);
@@ -825,7 +1170,6 @@ impl<const N: usize> Shr<u32> for BigInt<N> {
     /// operation does *not* return an underflow error if the number of bits
     /// shifted is larger than N * 64. Instead the result will be saturated to
     /// zero.
-    #[inline]
     fn shr(mut self, rhs: u32) -> Self::Output {
         self >>= rhs;
         self
@@ -839,7 +1183,6 @@ impl<const N: usize> ShlAssign<u32> for BigInt<N> {
     /// operation does *not* return an overflow error if the number of bits
     /// shifted is larger than N * 64. Instead, the overflow will be chopped
     /// off.
-    #[inline]
     fn shl_assign(&mut self, mut rhs: u32) {
         if rhs >= (64 * N) as u32 {
             *self = Self::from(0u64);
@@ -856,6 +1199,7 @@ impl<const N: usize> ShlAssign<u32> for BigInt<N> {
 
         if rhs > 0 {
             let mut t = 0;
+            #[allow(unused)]
             for i in 0..N {
                 let a = &mut self.0[i];
                 let t2 = *a >> (64 - rhs);
@@ -876,7 +1220,6 @@ impl<const N: usize> Shl<u32> for BigInt<N> {
     /// operation does *not* return an overflow error if the number of bits
     /// shifted is larger than N * 64. Instead, the overflow will be chopped
     /// off.
-    #[inline]
     fn shl(mut self, rhs: u32) -> Self::Output {
         self <<= rhs;
         self
@@ -886,13 +1229,77 @@ impl<const N: usize> Shl<u32> for BigInt<N> {
 impl<const N: usize> Not for BigInt<N> {
     type Output = Self;
 
-    #[inline]
     fn not(self) -> Self::Output {
         let mut result = Self::zero();
         for i in 0..N {
             result.0[i] = !self.0[i];
         }
         result
+    }
+}
+
+// Arithmetic with truncating semantics for BigInt of different widths
+// Note: we cannot let the output have arbitrary width due to Rust's type limitation
+// So we set the output width to be the same as the width of the left operand
+impl<const N: usize, const M: usize> Add<BigInt<M>> for BigInt<N> {
+    type Output = BigInt<N>;
+
+    fn add(self, rhs: BigInt<M>) -> Self::Output {
+        debug_assert!(N >= M, "right operand cannot be wider than left operand");
+        self.add_trunc::<M, N>(&rhs)
+    }
+}
+
+impl<const N: usize, const M: usize> Add<&BigInt<M>> for BigInt<N> {
+    type Output = BigInt<N>;
+    fn add(self, rhs: &BigInt<M>) -> Self::Output {
+        debug_assert!(N >= M, "right operand cannot be wider than left operand");
+        self.add_trunc::<M, N>(rhs)
+    }
+}
+
+impl<const N: usize, const M: usize> Sub<BigInt<M>> for BigInt<N> {
+    type Output = BigInt<N>;
+
+    fn sub(self, rhs: BigInt<M>) -> Self::Output {
+        debug_assert!(N >= M, "right operand cannot be wider than left operand");
+        self.sub_trunc::<M, N>(&rhs)
+    }
+}
+
+impl<const N: usize, const M: usize> Sub<&BigInt<M>> for BigInt<N> {
+    type Output = BigInt<N>;
+    fn sub(self, rhs: &BigInt<M>) -> Self::Output {
+        debug_assert!(N >= M, "right operand cannot be wider than left operand");
+        self.sub_trunc::<M, N>(rhs)
+    }
+}
+
+impl<const N: usize, const M: usize> AddAssign<BigInt<M>> for BigInt<N> {
+    fn add_assign(&mut self, rhs: BigInt<M>) {
+        debug_assert!(N >= M, "right operand cannot be wider than left operand");
+        self.add_assign_trunc::<M>(&rhs);
+    }
+}
+
+impl<const N: usize, const M: usize> AddAssign<&BigInt<M>> for BigInt<N> {
+    fn add_assign(&mut self, rhs: &BigInt<M>) {
+        debug_assert!(N >= M, "right operand cannot be wider than left operand");
+        self.add_assign_trunc::<M>(rhs);
+    }
+}
+
+impl<const N: usize, const M: usize> SubAssign<BigInt<M>> for BigInt<N> {
+    fn sub_assign(&mut self, rhs: BigInt<M>) {
+        debug_assert!(N >= M, "right operand cannot be wider than left operand");
+        self.sub_assign_trunc::<M>(&rhs);
+    }
+}
+
+impl<const N: usize, const M: usize> SubAssign<&BigInt<M>> for BigInt<N> {
+    fn sub_assign(&mut self, rhs: &BigInt<M>) {
+        debug_assert!(N >= M, "right operand cannot be wider than left operand");
+        self.sub_assign_trunc::<M>(rhs);
     }
 }
 
@@ -904,8 +1311,7 @@ impl<const N: usize> Not for BigInt<N> {
 /// let res = signed_mod_reduction(6u64, 8u64);
 /// assert_eq!(res, -2i64);
 /// ```
-#[inline]
-pub const fn signed_mod_reduction(n: u64, modulus: u64) -> i64 {
+pub fn signed_mod_reduction(n: u64, modulus: u64) -> i64 {
     let t = (n % modulus) as i64;
     if t as u64 >= (modulus / 2) {
         t - (modulus as i64)
@@ -945,8 +1351,10 @@ pub trait BigInteger:
     + 'static
     + UniformRand
     + Zeroize
+    + Zero
     + AsMut<[u64]>
     + AsRef<[u64]>
+    + From<u128>
     + From<u64>
     + From<u32>
     + From<u16>
@@ -1067,6 +1475,18 @@ pub trait BigInteger:
     /// ```
     #[deprecated(since = "0.4.2", note = "please use the operator `<<` instead")]
     fn muln(&mut self, amt: u32);
+
+    /// NEW! Multiplies self by a u64 in place. Overflow is ignored.
+    fn mul_u64_in_place(&mut self, other: u64);
+
+    /// NEW! Multiplies self by a u64, returning a bigint with one extra limb to hold overflow.
+    fn mul_u64_w_carry<const NPLUS1: usize>(&self, other: u64) -> BigInt<NPLUS1>;
+
+    /// NEW! Multiplies self by a u128, returning a bigint with two extra limbs to hold overflow.
+    fn mul_u128_w_carry<const NPLUS1: usize, const NPLUS2: usize>(
+        &self,
+        other: u128,
+    ) -> BigInt<NPLUS2>;
 
     /// Multiplies this [`BigInteger`] by another `BigInteger`, storing the result in `self`.
     /// Overflow is ignored.
@@ -1196,17 +1616,6 @@ pub trait BigInteger:
     /// ```
     fn is_even(&self) -> bool;
 
-    /// Returns true iff this number is zero.
-    /// # Example
-    ///
-    /// ```
-    /// use ark_ff::{biginteger::BigInteger64 as B, BigInteger as _};
-    ///
-    /// let mut zero = B::from(0u64);
-    /// assert!(zero.is_zero());
-    /// ```
-    fn is_zero(&self) -> bool;
-
     /// Compute the minimum number of bits needed to encode this number.
     /// # Example
     /// ```
@@ -1276,9 +1685,8 @@ pub trait BigInteger:
     /// vec[63] = true;
     /// assert_eq!(arr, vec);
     /// ```
-    #[inline]
     fn to_bits_be(&self) -> Vec<bool> {
-        BitIteratorBE::new(self).collect()
+        BitIteratorBE::new(self).collect::<Vec<_>>()
     }
 
     /// Returns the bit representation in a little endian boolean array,
@@ -1294,9 +1702,8 @@ pub trait BigInteger:
     /// vec[0] = true;
     /// assert_eq!(arr, vec);
     /// ```
-    #[inline]
     fn to_bits_le(&self) -> Vec<bool> {
-        BitIteratorLE::new(self).collect()
+        BitIteratorLE::new(self).collect::<Vec<_>>()
     }
 
     /// Returns the byte representation in a big endian byte array,
@@ -1330,12 +1737,11 @@ pub trait BigInteger:
     fn to_bytes_le(&self) -> Vec<u8>;
 
     /// Returns the windowed non-adjacent form of `self`, for a window of size `w`.
-    #[inline]
     fn find_wnaf(&self, w: usize) -> Option<Vec<i64>> {
         // w > 2 due to definition of wNAF, and w < 64 to make sure that `i64`
         // can fit each signed digit
         if (2..64).contains(&w) {
-            let mut res = Vec::new();
+            let mut res = vec![];
             let mut e = *self;
 
             while !e.is_zero() {

@@ -6,8 +6,7 @@
     nonstandard_style,
     rust_2018_idioms
 )]
-#![forbid(unsafe_code)]
-
+#![deny(unsafe_code)]
 //! This library implements the BN254 curve that was sampled as part of the [\[BCTV14\]](https://eprint.iacr.org/2013/879.pdf) paper .
 //! The name denotes that it is a Barreto--Naehrig curve of embedding degree 12,
 //! defined over a 254-bit (prime) field. The scalar field is highly 2-adic.
@@ -20,8 +19,7 @@
 //!
 //!
 //! Curve information:
-//! * Base field: q =
-//!   21888242871839275222246405745257275088696311157297823662689037894645226208583
+//! * Base field: q = 21888242871839275222246405745257275088696311157297823662689037894645226208583
 //! * Scalar field: r =
 //!   21888242871839275222246405745257275088548364400416034343698204186575808495617
 //! * valuation(q - 1, 2) = 1
@@ -40,6 +38,7 @@ mod fields;
 #[cfg(feature = "curve")]
 pub use curves::*;
 
+#[allow(unused_imports)]
 pub use fields::*;
 
 #[cfg(feature = "r1cs")]

@@ -1,6 +1,6 @@
 use crate::{
     models::{short_weierstrass::SWCurveConfig, CurveConfig},
-    pairing::{MillerLoopOutput, Pairing, PairingOutput},
+    pairing::{CompressedPairing, MillerLoopOutput, Pairing, PairingOutput},
 };
 use ark_ff::{
     fields::{
@@ -11,6 +11,7 @@ use ark_ff::{
     },
     CyclotomicMultSubgroup,
 };
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::{cfg_chunks_mut, marker::PhantomData, vec::*};
 use educe::Educe;
 use itertools::Itertools;
@@ -22,6 +23,83 @@ use rayon::prelude::*;
 pub enum TwistType {
     M,
     D,
+}
+
+/// Construct a compressed target field element from a value already raised by
+/// the \Psi_6 exponent in the BN final exponentiation pipeline.
+pub trait FromPsi6Pow<P: BnConfig>: Sized {
+    fn from_psi_six_pow(value: Fp12<P::Fp12Config>) -> Option<Self>;
+}
+
+/// Hard-part exponentiation for BN curves, assuming the input is already in the
+/// cyclotomic subgroup.
+fn pow_sixth_cyclotomic_polynomial_over_r_cyclotomic_optimized<P: BnConfig>(
+    mut f: Fp12<P::Fp12Config>,
+) -> Fp12<P::Fp12Config> {
+    let y0 = Bn::<P>::exp_by_neg_x(f);
+    let y1 = y0.cyclotomic_square();
+    let y2 = y1.cyclotomic_square();
+    let mut y3 = y2 * &y1;
+    let y4 = Bn::<P>::exp_by_neg_x(y3);
+    let y5 = y4.cyclotomic_square();
+    let mut y6 = Bn::<P>::exp_by_neg_x(y5);
+    y3.cyclotomic_inverse_in_place();
+    y6.cyclotomic_inverse_in_place();
+    let y7 = y6 * &y4;
+    let mut y8 = y7 * &y3;
+    let y9 = y8 * &y1;
+    let y10 = y8 * &y4;
+    let y11 = y10 * &f;
+    let mut y12 = y9;
+    y12.frobenius_map_in_place(1);
+    let y13 = y12 * &y11;
+    y8.frobenius_map_in_place(2);
+    let y14 = y8 * &y13;
+    f.cyclotomic_inverse_in_place();
+    let mut y15 = f * &y9;
+    y15.frobenius_map_in_place(3);
+    y15 * &y14
+}
+
+/// Hard-part exponentiation for BN curves without cyclotomic assumptions.
+pub fn pow_sixth_cyclotomic_polynomial_over_r<P: BnConfig>(
+    mut f: Fp12<P::Fp12Config>,
+) -> Fp12<P::Fp12Config> {
+    let y0 = Bn::<P>::exp_by_neg_x_non_cyclotomic(f);
+    let y1 = y0.square();
+    let y2 = y1.square();
+    let mut y3 = y2 * &y1;
+    let y4 = Bn::<P>::exp_by_neg_x_non_cyclotomic(y3);
+    let y5 = y4.square();
+    let mut y6 = Bn::<P>::exp_by_neg_x_non_cyclotomic(y5);
+    y3.inverse_in_place();
+    y6.inverse_in_place();
+    let y7 = y6 * &y4;
+    let mut y8 = y7 * &y3;
+    let y9 = y8 * &y1;
+    let y10 = y8 * &y4;
+    let y11 = y10 * &f;
+    let mut y12 = y9;
+    y12.frobenius_map_in_place(1);
+    let y13 = y12 * &y11;
+    y8.frobenius_map_in_place(2);
+    let y14 = y8 * &y13;
+    f.inverse_in_place();
+    let mut y15 = f * &y9;
+    y15.frobenius_map_in_place(3);
+    y15 * &y14
+}
+
+/// Easy part of the BN final exponentiation: raise by \Psi_6.
+pub fn raise_to_psi_six_pow<P: BnConfig>(f: Fp12<P::Fp12Config>) -> Option<Fp12<P::Fp12Config>> {
+    let mut f1 = f;
+    f1.cyclotomic_inverse_in_place();
+    f.inverse().map(|mut f2| {
+        let mut r = f1 * &f2;
+        f2 = r;
+        r.frobenius_map_in_place(2);
+        r * &f2
+    })
 }
 
 pub trait BnConfig: 'static + Sized {
@@ -42,6 +120,11 @@ pub trait BnConfig: 'static + Sized {
     type Fp2Config: Fp2Config<Fp = Self::Fp>;
     type Fp6Config: Fp6Config<Fp2Config = Self::Fp2Config>;
     type Fp12Config: Fp12Config<Fp6Config = Self::Fp6Config>;
+    type CompressedFp12Config: FromPsi6Pow<Self>
+        + Sized
+        + Sync
+        + CanonicalDeserialize
+        + CanonicalSerialize;
     type G1Config: SWCurveConfig<BaseField = Self::Fp>;
     type G2Config: SWCurveConfig<
         BaseField = Fp2<Self::Fp2Config>,
@@ -102,67 +185,18 @@ pub trait BnConfig: 'static + Sized {
         MillerLoopOutput(f)
     }
 
+    #[allow(clippy::let_and_return)]
     fn final_exponentiation(f: MillerLoopOutput<Bn<Self>>) -> Option<PairingOutput<Bn<Self>>> {
-        // Easy part: result = elt^((q^6-1)*(q^2+1)).
-        // Follows, e.g., Beuchat et al page 9, by computing result as follows:
-        //   elt^((q^6-1)*(q^2+1)) = (conj(elt) * elt^(-1))^(q^2+1)
-        let f = f.0;
+        raise_to_psi_six_pow::<Self>(f.0)
+            .map(pow_sixth_cyclotomic_polynomial_over_r_cyclotomic_optimized::<Self>)
+            .map(PairingOutput)
+    }
 
-        // f1 = r.cyclotomic_inverse_in_place() = f^(p^6)
-        let mut f1 = f;
-        f1.cyclotomic_inverse_in_place();
-
-        f.inverse().map(|mut f2| {
-            // f2 = f^(-1);
-            // r = f^(p^6 - 1)
-            let mut r = f1 * &f2;
-
-            // f2 = f^(p^6 - 1)
-            f2 = r;
-            // r = f^((p^6 - 1)(p^2))
-            r.frobenius_map_in_place(2);
-
-            // r = f^((p^6 - 1)(p^2) + (p^6 - 1))
-            // r = f^((p^6 - 1)(p^2 + 1))
-            r *= &f2;
-
-            // Hard part follows Laura Fuentes-Castaneda et al. "Faster hashing to G2"
-            // by computing:
-            //
-            // result = elt^(q^3 * (12*z^3 + 6z^2 + 4z - 1) +
-            //               q^2 * (12*z^3 + 6z^2 + 6z) +
-            //               q   * (12*z^3 + 6z^2 + 4z) +
-            //               1   * (12*z^3 + 12z^2 + 6z + 1))
-            // which equals
-            //
-            // result = elt^( 2z * ( 6z^2 + 3z + 1 ) * (q^4 - q^2 + 1)/r ).
-
-            let y0 = Bn::<Self>::exp_by_neg_x(r);
-            let y1 = y0.cyclotomic_square();
-            let y2 = y1.cyclotomic_square();
-            let mut y3 = y2 * &y1;
-            let y4 = Bn::<Self>::exp_by_neg_x(y3);
-            let y5 = y4.cyclotomic_square();
-            let mut y6 = Bn::<Self>::exp_by_neg_x(y5);
-            y3.cyclotomic_inverse_in_place();
-            y6.cyclotomic_inverse_in_place();
-            let y7 = y6 * &y4;
-            let mut y8 = y7 * &y3;
-            let y9 = y8 * &y1;
-            let y10 = y8 * &y4;
-            let y11 = y10 * &r;
-            let mut y12 = y9;
-            y12.frobenius_map_in_place(1);
-            let y13 = y12 * &y11;
-            y8.frobenius_map_in_place(2);
-            let y14 = y8 * &y13;
-            r.cyclotomic_inverse_in_place();
-            let mut y15 = r * &y9;
-            y15.frobenius_map_in_place(3);
-            let y16 = y15 * &y14;
-
-            PairingOutput(y16)
-        })
+    fn compressed_final_exponentiation(
+        f: MillerLoopOutput<Bn<Self>>,
+    ) -> Option<Self::CompressedFp12Config> {
+        let val = pow_sixth_cyclotomic_polynomial_over_r::<Self>(f.0);
+        Self::CompressedFp12Config::from_psi_six_pow(val)
     }
 }
 
@@ -206,6 +240,14 @@ impl<P: BnConfig> Bn<P> {
         }
         f
     }
+
+    fn exp_by_neg_x_non_cyclotomic(mut f: Fp12<P::Fp12Config>) -> Fp12<P::Fp12Config> {
+        f = f.pow(P::X);
+        if !P::X_IS_NEGATIVE {
+            f.inverse_in_place();
+        }
+        f
+    }
 }
 
 impl<P: BnConfig> Pairing for Bn<P> {
@@ -228,5 +270,15 @@ impl<P: BnConfig> Pairing for Bn<P> {
 
     fn final_exponentiation(f: MillerLoopOutput<Self>) -> Option<PairingOutput<Self>> {
         P::final_exponentiation(f)
+    }
+}
+
+impl<P: BnConfig> CompressedPairing for Bn<P> {
+    type CompressedTargetField = P::CompressedFp12Config;
+
+    fn compressed_final_exponentiation(
+        f: MillerLoopOutput<Self>,
+    ) -> Option<Self::CompressedTargetField> {
+        P::compressed_final_exponentiation(f)
     }
 }

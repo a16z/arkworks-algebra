@@ -15,7 +15,7 @@
 pub mod biginteger;
 pub use biginteger::{
     signed_mod_reduction, BigInt, BigInteger, BigInteger128, BigInteger256, BigInteger320,
-    BigInteger384, BigInteger448, BigInteger64, BigInteger768, BigInteger832,
+    BigInteger384, BigInteger448, BigInteger64, BigInteger768, BigInteger832, SignedBigInt,
 };
 
 #[macro_use]

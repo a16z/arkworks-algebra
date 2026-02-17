@@ -124,6 +124,30 @@ impl<P: QuadExtConfig> QuadExtField<P> {
         self
     }
 
+    /// Lemma 3 on p.6 of https://eprint.iacr.org/2007/429.pdf
+    /// Suppose the base field is F_q, the q-Frobenius maps the generator \sigma of the quadratic extension to -\sigma. Therefore,
+    /// (a_0 + a_1 \sigma)^(q-1) = (a_0 + a_1 \sigma)^q/(a_0 + a_1 \sigma)
+    /// = (a_0/a_1 - \sigma)/(a_0/a_1 + \sigma).
+    /// The element a_0/a_1 is the compressed element lying inside in the torus.
+    #[inline]
+    pub fn torus_compress_base_order_minus_one_pow(&self) -> P::BaseField {
+        self.c0 / self.c1
+    }
+
+    /// Return the value of (compressed - non_residue) / (compressed + non_residue)
+    #[inline]
+    pub fn torus_decompress(compressed: P::BaseField) -> Self {
+        Self::new(compressed, -P::BaseField::one()) / Self::new(compressed, P::BaseField::one())
+    }
+
+    /// Given the torus compressed forms for lhs and rhs, return the compressed form of their product.
+    /// Equation (3) at the bottom of p.7 https://eprint.iacr.org/2007/429.pdf.
+    /// (ab)' = (a'b' + non_residue)/(b' + a') where a' is the compressed form of a
+    #[inline]
+    pub fn mul_torus_compressed_elements(lhs: P::BaseField, rhs: P::BaseField) -> P::BaseField {
+        (lhs * rhs + P::NONRESIDUE) / (lhs + rhs)
+    }
+
     /// Norm of QuadExtField over `P::BaseField`:`Norm(a) = a * a.conjugate()`.
     /// This simplifies to: `Norm(a) = a.x^2 - P::NON_RESIDUE * a.y^2`.
     /// This is alternatively expressed as `Norm(a) = a^(1 + p)`.

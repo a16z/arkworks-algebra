@@ -44,6 +44,18 @@ impl<P: BnConfig> G1Prepared<P> {
     }
 }
 
+impl<'a, P: BnConfig> From<&'a G1Prepared<P>> for G1Prepared<P> {
+    fn from(other: &'a G1Prepared<P>) -> Self {
+        other.clone()
+    }
+}
+
+impl<P: BnConfig> AsRef<G1Prepared<P>> for G1Prepared<P> {
+    fn as_ref(&self) -> &G1Prepared<P> {
+        self
+    }
+}
+
 impl<P: BnConfig> Default for G1Prepared<P> {
     fn default() -> Self {
         Self(G1Affine::<P>::generator())

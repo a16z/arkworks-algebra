@@ -102,10 +102,12 @@ impl_uint!(u8);
 impl_uint!(u16);
 impl_uint!(u32);
 impl_uint!(u64);
+impl_uint!(u128);
 impl_uint!(i8);
 impl_uint!(i16);
 impl_uint!(i32);
 impl_uint!(i64);
+impl_uint!(i128);
 
 impl CanonicalSerialize for usize {
     #[inline]

@@ -23,5 +23,10 @@ pub mod fq12;
 #[cfg(feature = "curve")]
 pub use self::fq12::*;
 
+#[cfg(feature = "curve")]
+pub mod compression;
+#[cfg(feature = "curve")]
+pub use self::compression::*;
+
 #[cfg(all(feature = "curve", test))]
 mod tests;

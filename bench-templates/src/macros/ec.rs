@@ -252,7 +252,7 @@ macro_rules! ec_bench {
                         let s: Vec<_> = (0..SAMPLES)
                             .map(|_| bool::rand(&mut rng))
                             .collect();
-                        b.iter(|| <$Group as VariableBaseMSM>::msm_u1(&v, &s))
+                        b.iter(|| <$Group as VariableBaseMSM>::msm_u1(&v, &s, false))
                     });
 
                     c.bench_function(&format!("MSM-u8 for {name}"), |b| {
@@ -266,7 +266,7 @@ macro_rules! ec_bench {
                         let s: Vec<_> = (0..SAMPLES)
                             .map(|_| u8::rand(&mut rng))
                             .collect();
-                        b.iter(|| <$Group as VariableBaseMSM>::msm_u8(&v, &s))
+                        b.iter(|| <$Group as VariableBaseMSM>::msm_u8(&v, &s, false))
                     });
 
                     c.bench_function(&format!("MSM-i8 for {name}"), |b| {
@@ -287,7 +287,7 @@ macro_rules! ec_bench {
                         let s: Vec<_> = (0..SAMPLES)
                             .map(|_| u16::rand(&mut rng))
                             .collect();
-                        b.iter(|| <$Group>::msm_u16(&v, &s))
+                        b.iter(|| <$Group>::msm_u16(&v, &s, false))
                     });
 
                     c.bench_function(&format!("MSM-i16 for {name}"), |b| {
@@ -308,7 +308,7 @@ macro_rules! ec_bench {
                         let s: Vec<_> = (0..SAMPLES)
                             .map(|_| u32::rand(&mut rng))
                             .collect();
-                        b.iter(|| <$Group>::msm_u32(&v, &s))
+                        b.iter(|| <$Group>::msm_u32(&v, &s, false))
                     });
 
                     c.bench_function(&format!("MSM-i32 for {name}"), |b| {
@@ -329,7 +329,7 @@ macro_rules! ec_bench {
                         let s: Vec<_> = (0..SAMPLES)
                             .map(|_| u64::rand(&mut rng))
                             .collect();
-                        b.iter(|| <$Group>::msm_u64(&v, &s))
+                        b.iter(|| <$Group>::msm_u64(&v, &s, false))
                     });
                     c.bench_function(&format!("MSM-i64 for {name}"), |b| {
                         let s: Vec<_> = (0..SAMPLES)
