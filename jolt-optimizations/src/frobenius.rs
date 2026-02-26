@@ -5,7 +5,7 @@
 
 use crate::constants::get_frobenius_coefficients;
 use ark_bn254::{G2Affine, G2Projective};
-use ark_ec::{AffineRepr, CurveGroup};
+use ark_ec::AffineRepr;
 use ark_std::Zero;
 
 /// Compute the Frobenius endomorphism ψ^k for BN254 G2 (projective version)
@@ -51,8 +51,27 @@ pub fn frobenius_psi_power_projective(p: &G2Projective, k: usize) -> G2Projectiv
     }
 }
 
-/// Compute the Frobenius endomorphism ψ^k for BN254 G2
+/// Compute the Frobenius endomorphism ψ^k for BN254 G2 (affine version)
+/// Operates directly on affine coordinates — avoids unnecessary projective conversion.
 pub fn frobenius_psi_power_affine(p: &G2Affine, k: usize) -> G2Affine {
-    let projective_result = frobenius_psi_power_projective(&p.into_group(), k);
-    projective_result.into_affine()
+    if p.is_zero() {
+        return *p;
+    }
+
+    let mut x = p.x;
+    let mut y = p.y;
+    let coeffs = get_frobenius_coefficients();
+
+    if (k & 1) == 1 {
+        x.conjugate_in_place();
+        y.conjugate_in_place();
+    }
+
+    match k % 4 {
+        0 => *p,
+        1 => G2Affine::new_unchecked(x * coeffs.psi1_coef2, y * coeffs.psi1_coef3),
+        2 => G2Affine::new_unchecked(x * coeffs.psi2_coef2, y * coeffs.psi2_coef3),
+        3 => G2Affine::new_unchecked(x * coeffs.psi3_coef2, y * coeffs.psi3_coef3),
+        _ => unreachable!(),
+    }
 }

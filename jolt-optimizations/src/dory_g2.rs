@@ -1,23 +1,24 @@
 //! Dory protocol vector operations for G2
 //! Implements v[i] = v[i] + scalar * g[i] and v[i] = scalar * v[i] + gamma[i]
 
-use ark_bn254::{Fr, G2Projective};
+use ark_bn254::{Fr, G2Affine, G2Projective};
+use ark_ec::CurveGroup;
 use rayon::prelude::*;
 
 use crate::decomp_4d::decompose_scalar_4d;
-use crate::frobenius::frobenius_psi_power_projective;
-use crate::glv_four::{shamir_glv_mul_4d, shamir_glv_mul_4d_precomputed};
+use crate::frobenius::frobenius_psi_power_affine;
+use crate::glv_four::{shamir_glv_mul_4d_affine, shamir_glv_mul_4d_precomputed};
 use crate::{
     glv_four_precompute, glv_four_precompute_windowed2_signed, glv_four_scalar_mul_online,
     glv_four_scalar_mul_windowed2_signed, PrecomputedShamir4Data, PrecomputedShamir4Table,
     Windowed2Signed4Data,
 };
 
-// ============================================================================
-// Operation 1: v[i] = v[i] + scalar * g[i]
-// ============================================================================
+/// Minimum vector length to justify rayon par_iter overhead
+const MIN_PAR_SIZE: usize = 64;
 
-/// Online version:
+
+/// Online version — batch-normalizes generators, uses affine Frobenius + Shamir
 pub fn vector_add_scalar_mul_g2_online(
     v: &mut [G2Projective],
     generators: &[G2Projective],
@@ -26,17 +27,25 @@ pub fn vector_add_scalar_mul_g2_online(
     assert_eq!(v.len(), generators.len());
     let (coeffs, signs) = decompose_scalar_4d(scalar);
 
-    v.par_iter_mut()
-        .zip(generators.par_iter())
-        .for_each(|(vi, gen)| {
-            let bases = [
-                *gen,
-                frobenius_psi_power_projective(gen, 1),
-                frobenius_psi_power_projective(gen, 2),
-                frobenius_psi_power_projective(gen, 3),
-            ];
-            *vi += shamir_glv_mul_4d(&bases, &coeffs, &signs);
-        });
+    let affine_gens = G2Projective::normalize_batch(generators);
+
+    let body = |(vi, affine_gen): (&mut G2Projective, &G2Affine)| {
+        let bases = [
+            *affine_gen,
+            frobenius_psi_power_affine(affine_gen, 1),
+            frobenius_psi_power_affine(affine_gen, 2),
+            frobenius_psi_power_affine(affine_gen, 3),
+        ];
+        *vi += shamir_glv_mul_4d_affine(&bases, &coeffs, &signs);
+    };
+
+    if v.len() >= MIN_PAR_SIZE {
+        v.par_iter_mut()
+            .zip(affine_gens.par_iter())
+            .for_each(body);
+    } else {
+        v.iter_mut().zip(affine_gens.iter()).for_each(body);
+    }
 }
 
 /// Precomputed full
@@ -48,11 +57,17 @@ pub fn vector_add_scalar_mul_g2_precomputed(
     assert_eq!(v.len(), precomputed_tables.len());
     let (coeffs, signs) = decompose_scalar_4d(scalar);
 
-    v.par_iter_mut()
-        .zip(precomputed_tables.par_iter())
-        .for_each(|(vi, table)| {
-            *vi += shamir_glv_mul_4d_precomputed(table, &coeffs, &signs);
-        });
+    let body = |(vi, table): (&mut G2Projective, &PrecomputedShamir4Table)| {
+        *vi += shamir_glv_mul_4d_precomputed(table, &coeffs, &signs);
+    };
+
+    if v.len() >= MIN_PAR_SIZE {
+        v.par_iter_mut()
+            .zip(precomputed_tables.par_iter())
+            .for_each(body);
+    } else {
+        v.iter_mut().zip(precomputed_tables.iter()).for_each(body);
+    }
 }
 
 /// 2-bit signed precomputed
@@ -63,22 +78,21 @@ pub fn vector_add_scalar_mul_g2_windowed2_signed(
 ) {
     assert_eq!(v.len(), precomputed_generators.windowed2_tables.len());
 
-    // Use the GLV scalar multiplication on the generators
     let products = glv_four_scalar_mul_windowed2_signed(precomputed_generators, scalar);
 
-    // Add products to v
-    v.par_iter_mut()
-        .zip(products.par_iter())
-        .for_each(|(vi, &prod)| {
-            *vi += prod;
-        });
+    let body = |(vi, &prod): (&mut G2Projective, &G2Projective)| {
+        *vi += prod;
+    };
+
+    if v.len() >= MIN_PAR_SIZE {
+        v.par_iter_mut().zip(products.par_iter()).for_each(body);
+    } else {
+        v.iter_mut().zip(products.iter()).for_each(body);
+    }
 }
 
-// ============================================================================
-// Operation 2: v[i] = scalar * v[i] + gamma[i]
-// ============================================================================
 
-/// Online
+/// Online — batch-normalizes v, uses affine Frobenius + Shamir
 pub fn vector_scalar_mul_add_gamma_g2_online(
     v: &mut [G2Projective],
     scalar: Fr,
@@ -87,17 +101,29 @@ pub fn vector_scalar_mul_add_gamma_g2_online(
     assert_eq!(v.len(), gamma.len());
     let (coeffs, signs) = decompose_scalar_4d(scalar);
 
-    v.par_iter_mut()
-        .zip(gamma.par_iter())
-        .for_each(|(vi, &gamma_i)| {
-            let bases = [
-                *vi,
-                frobenius_psi_power_projective(vi, 1),
-                frobenius_psi_power_projective(vi, 2),
-                frobenius_psi_power_projective(vi, 3),
-            ];
-            *vi = shamir_glv_mul_4d(&bases, &coeffs, &signs) + gamma_i;
-        });
+    let affine_v = G2Projective::normalize_batch(v);
+
+    let body = |((vi, affine_vi), &gamma_i): ((&mut G2Projective, &G2Affine), &G2Projective)| {
+        let bases = [
+            *affine_vi,
+            frobenius_psi_power_affine(affine_vi, 1),
+            frobenius_psi_power_affine(affine_vi, 2),
+            frobenius_psi_power_affine(affine_vi, 3),
+        ];
+        *vi = shamir_glv_mul_4d_affine(&bases, &coeffs, &signs) + gamma_i;
+    };
+
+    if v.len() >= MIN_PAR_SIZE {
+        v.par_iter_mut()
+            .zip(affine_v.par_iter())
+            .zip(gamma.par_iter())
+            .for_each(body);
+    } else {
+        v.iter_mut()
+            .zip(affine_v.iter())
+            .zip(gamma.iter())
+            .for_each(body);
+    }
 }
 
 /// Precomputed full
@@ -106,13 +132,9 @@ pub fn vector_scalar_mul_add_gamma_g2_precomputed(
     scalar: Fr,
     gamma: &[G2Projective],
 ) {
-    // For this operation, we can't precompute on v since it's being modified
-    // So we just use the online version
     vector_scalar_mul_add_gamma_g2_online(v, scalar, gamma);
 }
 
-/// 2-bit signed
-/// Note: We can't precompute on v since it changes, so this uses online scalar mul
 pub fn vector_scalar_mul_add_gamma_g2_windowed2_signed(
     v: &mut [G2Projective],
     scalar: Fr,
@@ -120,21 +142,25 @@ pub fn vector_scalar_mul_add_gamma_g2_windowed2_signed(
 ) {
     assert_eq!(v.len(), gamma.len());
 
-    // Compute scalar * v[i] for all i using online method
     let products = glv_four_scalar_mul_online(scalar, v);
 
-    // Replace v with products + gamma
-    v.par_iter_mut()
-        .zip(products.par_iter())
-        .zip(gamma.par_iter())
-        .for_each(|((vi, &prod), &gamma_i)| {
-            *vi = prod + gamma_i;
-        });
+    let body = |((vi, &prod), &gamma_i): ((&mut G2Projective, &G2Projective), &G2Projective)| {
+        *vi = prod + gamma_i;
+    };
+
+    if v.len() >= MIN_PAR_SIZE {
+        v.par_iter_mut()
+            .zip(products.par_iter())
+            .zip(gamma.par_iter())
+            .for_each(body);
+    } else {
+        v.iter_mut()
+            .zip(products.iter())
+            .zip(gamma.iter())
+            .for_each(body);
+    }
 }
 
-// ============================================================================
-// Helper functions for precomputation
-// ============================================================================
 
 /// Precompute Shamir tables for a set of G2 generators
 pub fn precompute_g2_generators(generators: &[G2Projective]) -> PrecomputedShamir4Data {

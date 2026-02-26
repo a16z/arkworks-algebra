@@ -1,7 +1,7 @@
 //! Batch affine point addition for G1
 
 use ark_bn254::G1Affine;
-use rayon::prelude::*;
+use ark_std::Zero;
 
 /// Performs batch addition of G1 affine points.
 ///
@@ -29,7 +29,6 @@ pub fn batch_g1_additions(bases: &[G1Affine], indices: &[usize]) -> G1Affine {
         let has_odd = current_len % 2 == 1;
 
         let denominators: Vec<_> = (0..pairs_count)
-            .into_par_iter()
             .map(|i| {
                 let p1 = points[i * 2];
                 let p2 = points[i * 2 + 1];
@@ -41,8 +40,7 @@ pub fn batch_g1_additions(bases: &[G1Affine], indices: &[usize]) -> G1Affine {
         ark_ff::fields::batch_inversion(&mut inverses);
 
         let mut new_points: Vec<G1Affine> = (0..pairs_count)
-            .into_par_iter()
-            .zip(inverses.par_iter())
+            .zip(inverses.iter())
             .map(|(i, inv)| {
                 let p1 = points[i * 2];
                 let p2 = points[i * 2 + 1];
@@ -63,80 +61,31 @@ pub fn batch_g1_additions(bases: &[G1Affine], indices: &[usize]) -> G1Affine {
     points[0]
 }
 
-/// Performs multiple batch additions of G1 affine points in parallel.
-///
-/// # Arguments
-/// * `bases` - Slice of G1 affine points to select from
-/// * `indices_sets` - Vector of index vectors, each specifying which points to sum
-///
-/// # Returns
-/// Vector of sums, one for each index set
+/// Performs multiple batch additions of G1 affine points.
+/// Uses projective running sums with a single batch normalization at the end.
 pub fn batch_g1_additions_multi(bases: &[G1Affine], indices_sets: &[Vec<usize>]) -> Vec<G1Affine> {
+    use ark_bn254::G1Projective;
+    use ark_ec::CurveGroup;
+
     if indices_sets.is_empty() {
         return vec![];
     }
 
-    let mut working_sets: Vec<Vec<G1Affine>> = indices_sets
-        .par_iter()
+    let proj_sums: Vec<G1Projective> = indices_sets
+        .iter()
         .map(|indices| {
             if indices.is_empty() {
-                vec![G1Affine::identity()]
-            } else if indices.len() == 1 {
-                vec![bases[indices[0]]]
-            } else {
-                indices.iter().map(|&i| bases[i]).collect()
+                return G1Projective::zero();
             }
+            let mut sum = G1Projective::from(bases[indices[0]]);
+            for &idx in &indices[1..] {
+                sum += bases[idx];
+            }
+            sum
         })
         .collect();
 
-    loop {
-        let total_pairs: usize = working_sets.iter().map(|set| set.len() / 2).sum();
-
-        if total_pairs == 0 {
-            break;
-        }
-
-        let mut all_denominators = Vec::with_capacity(total_pairs);
-        let mut pair_info = Vec::with_capacity(total_pairs);
-
-        for (set_idx, set) in working_sets.iter().enumerate() {
-            let pairs_in_set = set.len() / 2;
-            for pair_idx in 0..pairs_in_set {
-                let p1 = set[pair_idx * 2];
-                let p2 = set[pair_idx * 2 + 1];
-                all_denominators.push(p2.x - p1.x);
-                pair_info.push((set_idx, pair_idx));
-            }
-        }
-
-        let mut inverses = all_denominators;
-        ark_ff::fields::batch_inversion(&mut inverses);
-
-        let mut new_working_sets: Vec<Vec<G1Affine>> = working_sets
-            .iter()
-            .map(|set| Vec::with_capacity((set.len() + 1) / 2))
-            .collect();
-
-        for ((set_idx, pair_idx), inv) in pair_info.iter().zip(inverses.iter()) {
-            let set = &working_sets[*set_idx];
-            let p1 = set[*pair_idx * 2];
-            let p2 = set[*pair_idx * 2 + 1];
-            let lambda = (p2.y - p1.y) * inv;
-            let x3 = lambda * lambda - p1.x - p2.x;
-            let y3 = lambda * (p1.x - x3) - p1.y;
-            new_working_sets[*set_idx].push(G1Affine::new_unchecked(x3, y3));
-        }
-
-        for (set_idx, set) in working_sets.iter().enumerate() {
-            if set.len() % 2 == 1 {
-                new_working_sets[set_idx].push(set[set.len() - 1]);
-            }
-        }
-
-        working_sets = new_working_sets;
-    }
-
-    working_sets.into_iter().map(|set| set[0]).collect()
+    G1Projective::normalize_batch(&proj_sums)
 }
 
 #[cfg(test)]
