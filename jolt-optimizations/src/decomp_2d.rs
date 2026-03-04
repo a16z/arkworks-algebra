@@ -61,16 +61,51 @@ pub fn decompose_scalar_2d(scalar: Fr) -> ([<Fr as PrimeField>::BigInt; 2], [boo
         k2_big
     };
 
+    debug_assert!(
+        k1_abs.num_bits() <= 130,
+        "k1_abs too large: {} bits",
+        k1_abs.num_bits()
+    );
+    debug_assert!(
+        k2_abs.num_bits() <= 130,
+        "k2_abs too large: {} bits",
+        k2_abs.num_bits()
+    );
+
     ([k1_abs, k2_abs], [!k1_neg, !k2_neg])
+}
+
+/// a - b - borrow_in → (result, borrow_out), pure unsigned arithmetic
+#[inline(always)]
+fn sbb(a: u64, b: u64, borrow: u64) -> (u64, u64) {
+    let sub = (b as u128) + (borrow as u128);
+    let a128 = a as u128;
+    (a128.wrapping_sub(sub) as u64, (a128 < sub) as u64)
+}
+
+/// Subtract q_limb * r from diff (multiply-and-subtract), pure u64 arithmetic
+#[inline(always)]
+fn sub_mul_limb(diff: &mut [u64; 6], q_limb: u64, r_limbs: &[u64; 4]) {
+    let mut carry = 0u64;
+    let mut borrow = 0u64;
+    for i in 0..4 {
+        let p = (q_limb as u128) * (r_limbs[i] as u128) + (carry as u128);
+        let (val, b) = sbb(diff[i], p as u64, borrow);
+        diff[i] = val;
+        carry = (p >> 64) as u64;
+        borrow = b;
+    }
+    for i in 4..6 {
+        let (val, b) = sbb(diff[i], carry, borrow);
+        diff[i] = val;
+        carry = 0;
+        borrow = b;
+    }
 }
 
 /// Compute round(k * n / r) where n is 2 limbs.
 /// Uses field mul for remainder, schoolbook for full product, exact division.
-fn compute_quotient_2limb(
-    k: &[u64; 4],
-    n: [u64; 2],
-    remainder_fr: Fr,
-) -> u128 {
+fn compute_quotient_2limb(k: &[u64; 4], n: [u64; 2], remainder_fr: Fr) -> u128 {
     // Full product k * n (6 limbs)
     let mut prod = [0u64; 6];
     for i in 0..4 {
@@ -87,31 +122,28 @@ fn compute_quotient_2limb(
 
     // diff = prod - rem (6-limb - 4-limb), result is q * r
     let mut diff = [0u64; 6];
-    let mut borrow = 0i128;
+    let mut borrow = 0u64;
     for i in 0..4 {
-        let d = (prod[i] as i128) - (rem[i] as i128) - borrow;
-        diff[i] = d as u64;
-        borrow = if d < 0 { 1 } else { 0 };
+        let (val, b) = sbb(prod[i], rem[i], borrow);
+        diff[i] = val;
+        borrow = b;
     }
     for i in 4..6 {
-        let d = (prod[i] as i128) - borrow;
-        diff[i] = d as u64;
-        borrow = if d < 0 { 1 } else { 0 };
+        let (val, b) = sbb(prod[i], 0, borrow);
+        diff[i] = val;
+        borrow = b;
     }
 
     // Exact division by r: q = diff / r using Montgomery's method
     // q has at most 2 limbs
     let r_limbs = Fr::MODULUS.0;
     let q0 = diff[0].wrapping_mul(R_INV);
-    // Subtract q0 * r from diff
-    let mut sub_borrow = 0i128;
-    for i in 0..4 {
-        let p = (q0 as u128) * (r_limbs[i] as u128);
-        let d = (diff[i] as i128) - (p as i128) - sub_borrow;
-        diff[i] = d as u64;
-        sub_borrow = ((p >> 64) as i128) - (d >> 64);
-    }
-    // diff[0] should now be 0, shift down
+    sub_mul_limb(&mut diff, q0, &r_limbs);
+    debug_assert!(
+        diff[0] == 0,
+        "2limb: Montgomery step failed: diff[0]={:016X}",
+        diff[0]
+    );
     let q1 = diff[1].wrapping_mul(R_INV);
 
     let q = (q0 as u128) | ((q1 as u128) << 64);
@@ -126,11 +158,7 @@ fn compute_quotient_2limb(
 }
 
 /// Compute round(k * n / r) where n is 1 limb.
-fn compute_quotient_1limb(
-    k: &[u64; 4],
-    n: u64,
-    remainder_fr: Fr,
-) -> u128 {
+fn compute_quotient_1limb(k: &[u64; 4], n: u64, remainder_fr: Fr) -> u128 {
     // Full product k * n (5 limbs)
     let mut prod = [0u64; 6];
     let mut carry = 0u128;
@@ -144,27 +172,26 @@ fn compute_quotient_1limb(
     let rem = remainder_fr.into_bigint().0;
 
     let mut diff = [0u64; 6];
-    let mut borrow = 0i128;
+    let mut borrow = 0u64;
     for i in 0..4 {
-        let d = (prod[i] as i128) - (rem[i] as i128) - borrow;
-        diff[i] = d as u64;
-        borrow = if d < 0 { 1 } else { 0 };
+        let (val, b) = sbb(prod[i], rem[i], borrow);
+        diff[i] = val;
+        borrow = b;
     }
     for i in 4..6 {
-        let d = (prod[i] as i128) - borrow;
-        diff[i] = d as u64;
-        borrow = if d < 0 { 1 } else { 0 };
+        let (val, b) = sbb(prod[i], 0, borrow);
+        diff[i] = val;
+        borrow = b;
     }
 
     let r_limbs = Fr::MODULUS.0;
     let q0 = diff[0].wrapping_mul(R_INV);
-    let mut sub_borrow = 0i128;
-    for i in 0..4 {
-        let p = (q0 as u128) * (r_limbs[i] as u128);
-        let d = (diff[i] as i128) - (p as i128) - sub_borrow;
-        diff[i] = d as u64;
-        sub_borrow = ((p >> 64) as i128) - (d >> 64);
-    }
+    sub_mul_limb(&mut diff, q0, &r_limbs);
+    debug_assert!(
+        diff[0] == 0,
+        "1limb: Montgomery step failed: diff[0]={:016X}",
+        diff[0]
+    );
     let q1 = diff[1].wrapping_mul(R_INV);
 
     let q = (q0 as u128) | ((q1 as u128) << 64);
@@ -205,6 +232,195 @@ pub fn glv_endomorphism(point: &G1Projective) -> G1Projective {
 }
 
 /// Apply GLV endomorphism to G1 affine point: (x, y) → (β·x, y)
+///
+/// WARNING: this function produces off-curve results on WASM due to a bug in
+/// Fq multiplication for certain operands produced by normalize_batch.
+/// Use `glv_endomorphism` (projective version) instead in production paths.
 pub fn glv_endomorphism_affine(point: &G1Affine) -> G1Affine {
     G1Affine::new_unchecked(point.x * ENDO_COEFF, point.y)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ark_ec::{AffineRepr, CurveGroup};
+    use ark_ff::{MontFp, PrimeField};
+    use ark_std::UniformRand;
+    use std::ops::Mul;
+
+    const LAMBDA: Fr =
+        MontFp!("21888242871839275217838484774961031246154997185409878258781734729429964517155");
+
+    fn is_on_curve_affine(p: &G1Affine) -> bool {
+        if p.infinity {
+            return true;
+        }
+        p.y * p.y == p.x * p.x * p.x + Fq::from(3u64)
+    }
+
+    fn is_on_curve(p: &G1Projective) -> bool {
+        is_on_curve_affine(&p.into_affine())
+    }
+
+    #[test]
+    fn test_decomp_identity_small_scalars() {
+        let lambda = LAMBDA;
+
+        for val in [0u64, 1, 2, 42, 123456789, u64::MAX] {
+            let scalar = Fr::from(val);
+            let (coeffs, signs) = decompose_scalar_2d(scalar);
+
+            let k1 = Fr::from_bigint(coeffs[0]).unwrap();
+            let k2 = Fr::from_bigint(coeffs[1]).unwrap();
+            let signed_k1 = if signs[0] { k1 } else { -k1 };
+            let signed_k2 = if signs[1] { k2 } else { -k2 };
+            let reconstructed = signed_k1 + lambda * signed_k2;
+            assert_eq!(reconstructed, scalar, "identity failed for val={val}");
+        }
+    }
+
+    #[test]
+    fn test_decomp_identity_random() {
+        let lambda = LAMBDA;
+
+        let mut rng = ark_std::test_rng();
+        for _ in 0..1000 {
+            let scalar = Fr::rand(&mut rng);
+            let (coeffs, signs) = decompose_scalar_2d(scalar);
+
+            let k1 = Fr::from_bigint(coeffs[0]).unwrap();
+            let k2 = Fr::from_bigint(coeffs[1]).unwrap();
+            let signed_k1 = if signs[0] { k1 } else { -k1 };
+            let signed_k2 = if signs[1] { k2 } else { -k2 };
+            let reconstructed = signed_k1 + lambda * signed_k2;
+            assert_eq!(reconstructed, scalar, "identity failed for random scalar");
+        }
+    }
+
+    #[test]
+    fn test_glv_endomorphism_on_curve() {
+        let mut rng = ark_std::test_rng();
+        for _ in 0..100 {
+            let p = G1Projective::rand(&mut rng);
+            let aff = p.into_affine();
+            let endo_aff = glv_endomorphism_affine(&aff);
+            assert!(
+                is_on_curve_affine(&endo_aff),
+                "endomorphism produced off-curve point"
+            );
+
+            let endo_proj = glv_endomorphism(&p);
+            assert!(
+                is_on_curve(&endo_proj),
+                "proj endomorphism produced off-curve point"
+            );
+        }
+    }
+
+    #[test]
+    fn test_glv_mul_matches_standard() {
+        use crate::glv_two::shamir_glv_mul_2d_affine;
+
+        let gen = G1Affine::generator();
+        let gen_proj: G1Projective = gen.into();
+        let mut rng = ark_std::test_rng();
+
+        for _ in 0..100 {
+            let scalar = Fr::rand(&mut rng);
+            let expected = gen_proj.mul(scalar);
+            assert!(is_on_curve(&expected), "standard mul off-curve");
+
+            let (coeffs, signs) = decompose_scalar_2d(scalar);
+            let glv_aff = glv_endomorphism_affine(&gen);
+            let result = shamir_glv_mul_2d_affine(&[gen, glv_aff], &coeffs, &signs);
+            assert!(is_on_curve(&result), "shamir result off-curve");
+
+            assert_eq!(
+                expected.into_affine(),
+                result.into_affine(),
+                "GLV result doesn't match standard mul"
+            );
+        }
+    }
+
+    #[test]
+    fn test_glv_mul_random_base() {
+        use crate::glv_two::shamir_glv_mul_2d_affine;
+
+        let mut rng = ark_std::test_rng();
+
+        for _ in 0..100 {
+            let base = G1Projective::rand(&mut rng);
+            let base_aff = base.into_affine();
+            let scalar = Fr::rand(&mut rng);
+
+            let expected = base.mul(scalar);
+            let (coeffs, signs) = decompose_scalar_2d(scalar);
+            let glv_aff = glv_endomorphism_affine(&base_aff);
+            let result = shamir_glv_mul_2d_affine(&[base_aff, glv_aff], &coeffs, &signs);
+
+            assert!(is_on_curve(&result), "random base GLV result off-curve");
+            assert_eq!(
+                expected.into_affine(),
+                result.into_affine(),
+                "random base GLV doesn't match standard"
+            );
+        }
+    }
+
+    #[test]
+    fn test_vector_add_scalar_mul_g1_online() {
+        use crate::dory_g1::vector_add_scalar_mul_g1_online;
+
+        let mut rng = ark_std::test_rng();
+        let n = 128;
+
+        let generators: Vec<G1Projective> = (0..n).map(|_| G1Projective::rand(&mut rng)).collect();
+        let mut v: Vec<G1Projective> = (0..n).map(|_| G1Projective::rand(&mut rng)).collect();
+        let v_orig = v.clone();
+        let scalar = Fr::rand(&mut rng);
+
+        vector_add_scalar_mul_g1_online(&mut v, &generators, scalar);
+
+        for i in 0..n {
+            assert!(
+                is_on_curve(&v[i]),
+                "v[{i}] off-curve after vector_add_scalar_mul"
+            );
+            let expected = v_orig[i] + generators[i].mul(scalar);
+            assert_eq!(
+                v[i].into_affine(),
+                expected.into_affine(),
+                "v[{i}] doesn't match expected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_vector_scalar_mul_add_gamma_g1_online() {
+        use crate::dory_g1::vector_scalar_mul_add_gamma_g1_online;
+
+        let mut rng = ark_std::test_rng();
+        let n = 128;
+
+        let gamma: Vec<G1Projective> = (0..n).map(|_| G1Projective::rand(&mut rng)).collect();
+        let mut v: Vec<G1Projective> = (0..n).map(|_| G1Projective::rand(&mut rng)).collect();
+        let v_orig = v.clone();
+        let scalar = Fr::rand(&mut rng);
+
+        vector_scalar_mul_add_gamma_g1_online(&mut v, scalar, &gamma);
+
+        for i in 0..n {
+            assert!(
+                is_on_curve(&v[i]),
+                "v[{i}] off-curve after vector_scalar_mul_add_gamma"
+            );
+            let expected = v_orig[i].mul(scalar) + gamma[i];
+            assert_eq!(
+                v[i].into_affine(),
+                expected.into_affine(),
+                "v[{i}] doesn't match expected"
+            );
+        }
+    }
 }

@@ -3,12 +3,11 @@
 //! Using GLV + strauss-shamir's trick extended to 4 scalars
 //! https://crypto.stackexchange.com/questions/99975/strauss-shamir-trick-on-ec-multiplication-by-scalar
 
-use ark_bn254::{Fr, G1Affine, G1Projective};
-use ark_ec::CurveGroup;
+use ark_bn254::{Fr, G1Projective};
 use rayon::prelude::*;
 
-use crate::decomp_2d::{decompose_scalar_2d, glv_endomorphism_affine};
-use crate::glv_two::{shamir_glv_mul_2d_affine, shamir_glv_mul_2d_precomputed};
+use crate::decomp_2d::{decompose_scalar_2d, glv_endomorphism};
+use crate::glv_two::{shamir_glv_mul_2d, shamir_glv_mul_2d_precomputed};
 use crate::{
     glv_two_precompute, glv_two_precompute_windowed2_signed, glv_two_scalar_mul_online,
     glv_two_scalar_mul_windowed2_signed, PrecomputedShamir2Data, PrecomputedShamir2Table,
@@ -18,8 +17,7 @@ use crate::{
 /// Minimum vector length to justify rayon par_iter overhead
 const MIN_PAR_SIZE: usize = 64;
 
-
-/// Online version — batch-normalizes generators to avoid per-element inversions
+/// Online version using projective GLV endomorphism and Shamir's trick
 pub fn vector_add_scalar_mul_g1_online(
     v: &mut [G1Projective],
     generators: &[G1Projective],
@@ -28,19 +26,15 @@ pub fn vector_add_scalar_mul_g1_online(
     assert_eq!(v.len(), generators.len());
     let (coeffs, signs) = decompose_scalar_2d(scalar);
 
-    let affine_gens = G1Projective::normalize_batch(generators);
-
-    let body = |(vi, affine_gen): (&mut G1Projective, &G1Affine)| {
-        let glv_affine = glv_endomorphism_affine(affine_gen);
-        *vi += shamir_glv_mul_2d_affine(&[*affine_gen, glv_affine], &coeffs, &signs);
+    let body = |(vi, gen): (&mut G1Projective, &G1Projective)| {
+        let bases = [*gen, glv_endomorphism(gen)];
+        *vi += shamir_glv_mul_2d(&bases, &coeffs, &signs);
     };
 
     if v.len() >= MIN_PAR_SIZE {
-        v.par_iter_mut()
-            .zip(affine_gens.par_iter())
-            .for_each(body);
+        v.par_iter_mut().zip(generators.par_iter()).for_each(body);
     } else {
-        v.iter_mut().zip(affine_gens.iter()).for_each(body);
+        v.iter_mut().zip(generators.iter()).for_each(body);
     }
 }
 
@@ -87,8 +81,7 @@ pub fn vector_add_scalar_mul_g1_windowed2_signed(
     }
 }
 
-
-/// Online — batch-normalizes all v[i] in one shot to avoid per-element inversions
+/// Online version using projective GLV endomorphism and Shamir's trick
 pub fn vector_scalar_mul_add_gamma_g1_online(
     v: &mut [G1Projective],
     scalar: Fr,
@@ -97,23 +90,15 @@ pub fn vector_scalar_mul_add_gamma_g1_online(
     assert_eq!(v.len(), gamma.len());
     let (coeffs, signs) = decompose_scalar_2d(scalar);
 
-    let affine_v = G1Projective::normalize_batch(v);
-
-    let body = |((vi, affine_vi), &gamma_i): ((&mut G1Projective, &G1Affine), &G1Projective)| {
-        let glv_affine = glv_endomorphism_affine(affine_vi);
-        *vi = shamir_glv_mul_2d_affine(&[*affine_vi, glv_affine], &coeffs, &signs) + gamma_i;
+    let body = |(vi, &gamma_i): (&mut G1Projective, &G1Projective)| {
+        let bases = [*vi, glv_endomorphism(vi)];
+        *vi = shamir_glv_mul_2d(&bases, &coeffs, &signs) + gamma_i;
     };
 
     if v.len() >= MIN_PAR_SIZE {
-        v.par_iter_mut()
-            .zip(affine_v.par_iter())
-            .zip(gamma.par_iter())
-            .for_each(body);
+        v.par_iter_mut().zip(gamma.par_iter()).for_each(body);
     } else {
-        v.iter_mut()
-            .zip(affine_v.iter())
-            .zip(gamma.iter())
-            .for_each(body);
+        v.iter_mut().zip(gamma.iter()).for_each(body);
     }
 }
 
@@ -152,7 +137,6 @@ pub fn vector_scalar_mul_add_gamma_g1_windowed2_signed(
             .for_each(body);
     }
 }
-
 
 /// Precompute Shamir tables for a set of G1 generators
 pub fn precompute_g1_generators(generators: &[G1Projective]) -> PrecomputedShamir2Data {
