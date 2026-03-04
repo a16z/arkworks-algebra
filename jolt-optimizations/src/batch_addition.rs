@@ -1,7 +1,6 @@
 //! Batch affine point addition for G1
 
 use ark_bn254::G1Affine;
-use rayon::prelude::*;
 
 /// Performs batch addition of G1 affine points.
 ///
@@ -29,7 +28,6 @@ pub fn batch_g1_additions(bases: &[G1Affine], indices: &[usize]) -> G1Affine {
         let has_odd = current_len % 2 == 1;
 
         let denominators: Vec<_> = (0..pairs_count)
-            .into_par_iter()
             .map(|i| {
                 let p1 = points[i * 2];
                 let p2 = points[i * 2 + 1];
@@ -41,8 +39,7 @@ pub fn batch_g1_additions(bases: &[G1Affine], indices: &[usize]) -> G1Affine {
         ark_ff::fields::batch_inversion(&mut inverses);
 
         let mut new_points: Vec<G1Affine> = (0..pairs_count)
-            .into_par_iter()
-            .zip(inverses.par_iter())
+            .zip(inverses.iter())
             .map(|(i, inv)| {
                 let p1 = points[i * 2];
                 let p2 = points[i * 2 + 1];
@@ -63,21 +60,15 @@ pub fn batch_g1_additions(bases: &[G1Affine], indices: &[usize]) -> G1Affine {
     points[0]
 }
 
-/// Performs multiple batch additions of G1 affine points in parallel.
-///
-/// # Arguments
-/// * `bases` - Slice of G1 affine points to select from
-/// * `indices_sets` - Vector of index vectors, each specifying which points to sum
-///
-/// # Returns
-/// Vector of sums, one for each index set
+/// Performs multiple batch additions of G1 affine points using cross-set
+/// batch inversion — one `batch_inversion` call across all sets per round.
 pub fn batch_g1_additions_multi(bases: &[G1Affine], indices_sets: &[Vec<usize>]) -> Vec<G1Affine> {
     if indices_sets.is_empty() {
         return vec![];
     }
 
     let mut working_sets: Vec<Vec<G1Affine>> = indices_sets
-        .par_iter()
+        .iter()
         .map(|indices| {
             if indices.is_empty() {
                 vec![G1Affine::identity()]
@@ -109,15 +100,14 @@ pub fn batch_g1_additions_multi(bases: &[G1Affine], indices_sets: &[Vec<usize>])
             }
         }
 
-        let mut inverses = all_denominators;
-        ark_ff::fields::batch_inversion(&mut inverses);
+        ark_ff::fields::batch_inversion(&mut all_denominators);
 
         let mut new_working_sets: Vec<Vec<G1Affine>> = working_sets
             .iter()
             .map(|set| Vec::with_capacity((set.len() + 1) / 2))
             .collect();
 
-        for ((set_idx, pair_idx), inv) in pair_info.iter().zip(inverses.iter()) {
+        for ((set_idx, pair_idx), inv) in pair_info.iter().zip(all_denominators.iter()) {
             let set = &working_sets[*set_idx];
             let p1 = set[*pair_idx * 2];
             let p2 = set[*pair_idx * 2 + 1];

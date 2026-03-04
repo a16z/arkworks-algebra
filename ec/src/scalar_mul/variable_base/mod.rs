@@ -739,7 +739,6 @@ pub fn msm_u128<V: VariableBaseMSM>(
         .sum()
 }
 
-// Compute msm using windowed non-adjacent form
 fn msm_bigint_wnaf_parallel<V: VariableBaseMSM>(
     bases: &[V::MulBase],
     bigints: &[<V::ScalarField as PrimeField>::BigInt],
@@ -767,30 +766,44 @@ fn msm_bigint_wnaf_parallel<V: VariableBaseMSM>(
         .flat_map(|s| make_digits(s, c, num_bits))
         .collect::<Vec<_>>();
     let zero = V::ZERO_BUCKET;
-    let window_sums: Vec<_> = ark_std::cfg_into_iter!(0..digits_count)
-        .map(|i| {
-            let mut buckets = vec![zero; 1 << c];
-            for (digits, base) in scalar_digits.chunks(digits_count).zip(bases) {
-                use ark_std::cmp::Ordering;
-                // digits is the digits thing of the first scalar?
-                let scalar = digits[i];
-                match 0.cmp(&scalar) {
-                    Ordering::Less => buckets[(scalar - 1) as usize] += base,
-                    Ordering::Greater => buckets[(-scalar - 1) as usize] -= base,
-                    Ordering::Equal => (),
-                }
-            }
+    let num_buckets = 1 << c;
 
-            // prefix sum
-            let mut running_sum = V::ZERO_BUCKET;
-            let mut res = V::ZERO_BUCKET;
-            buckets.into_iter().rev().for_each(|b| {
-                running_sum += &b;
-                res += &running_sum;
-            });
-            res
+    let process_window = |buckets: &mut Vec<V::Bucket>, i: usize| -> V::Bucket {
+        buckets.resize(num_buckets, zero);
+        for (digits, base) in scalar_digits.chunks(digits_count).zip(bases) {
+            use ark_std::cmp::Ordering;
+            let scalar = digits[i];
+            match 0.cmp(&scalar) {
+                Ordering::Less => buckets[(scalar - 1) as usize] += base,
+                Ordering::Greater => buckets[(-scalar - 1) as usize] -= base,
+                Ordering::Equal => (),
+            }
+        }
+
+        let mut running_sum = V::ZERO_BUCKET;
+        let mut res = V::ZERO_BUCKET;
+        for b in buckets.iter().rev() {
+            running_sum += b;
+            res += &running_sum;
+        }
+        buckets.fill(zero);
+        res
+    };
+
+    #[cfg(feature = "parallel")]
+    let window_sums: Vec<_> = (0..digits_count)
+        .into_par_iter()
+        .map_with(Vec::<V::Bucket>::new(), |buckets, i| {
+            process_window(buckets, i)
         })
         .collect();
+    #[cfg(not(feature = "parallel"))]
+    let window_sums: Vec<_> = {
+        let mut buckets = Vec::<V::Bucket>::new();
+        (0..digits_count)
+            .map(|i| process_window(&mut buckets, i))
+            .collect()
+    };
 
     // We store the sum for the lowest window.
     let lowest: V = (*window_sums.first().unwrap()).into();
@@ -809,13 +822,9 @@ fn msm_bigint_wnaf_parallel<V: VariableBaseMSM>(
             })
 }
 
-#[cfg(feature = "parallel")]
+#[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
 const THREADS_PER_CHUNK: usize = 2;
 
-/// Computes an MSM using the windowed non-adjacent form (WNAF) algorithm.
-/// To improve parallelism, when number of threads is at least 2, this
-/// function will split the input into enough chunks so that each chunk
-/// can be processed with 2 threads.
 fn msm_bigint_wnaf<V: VariableBaseMSM>(
     mut bases: &[V::MulBase],
     mut scalars: &[<V::ScalarField as PrimeField>::BigInt],
@@ -828,6 +837,9 @@ fn msm_bigint_wnaf<V: VariableBaseMSM>(
     #[cfg(feature = "parallel")]
     let chunk_size = {
         let cur_num_threads = rayon::current_num_threads();
+        #[cfg(target_arch = "wasm32")]
+        let num_chunks = cur_num_threads;
+        #[cfg(not(target_arch = "wasm32"))]
         let num_chunks = if cur_num_threads < THREADS_PER_CHUNK {
             1
         } else {
@@ -849,14 +861,14 @@ fn msm_bigint_wnaf<V: VariableBaseMSM>(
     cfg_chunks!(bases, chunk_size)
         .zip(cfg_chunks!(scalars, chunk_size))
         .map(|(bases, scalars)| {
-            #[cfg(feature = "parallel")]
+            #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
             let result = rayon::ThreadPoolBuilder::new()
                 .num_threads(THREADS_PER_CHUNK.min(rayon::current_num_threads()))
                 .build()
                 .unwrap()
                 .install(|| msm_bigint_wnaf_parallel::<V>(bases, scalars));
 
-            #[cfg(not(feature = "parallel"))]
+            #[cfg(any(not(feature = "parallel"), all(feature = "parallel", target_arch = "wasm32")))]
             let result = msm_bigint_wnaf_parallel::<V>(bases, scalars);
 
             result

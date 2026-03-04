@@ -2,7 +2,7 @@
 //! Three methods: (1) online, (2) precomputed full, (3) signed table
 
 use ark_bn254::{Fr, G1Projective};
-use ark_ec::AdditiveGroup;
+use ark_ec::{AdditiveGroup, CurveGroup};
 use ark_ff::{BigInteger, PrimeField};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::Zero;
@@ -10,28 +10,35 @@ use rayon::prelude::*;
 
 use crate::decomp_2d::{decompose_scalar_2d, glv_endomorphism};
 
+/// Minimum collection length to justify rayon par_iter overhead
+const MIN_PAR_SIZE: usize = 64;
+
 /// Online 2D GLV scalar multiplication
 pub fn glv_two_scalar_mul_online(scalar: Fr, points: &[G1Projective]) -> Vec<G1Projective> {
     let (coeffs, signs) = decompose_scalar_2d(scalar);
 
-    points
-        .par_iter()
-        .map(|point| {
-            // Compute bases: P and λ(P)
-            let bases = [*point, glv_endomorphism(point)];
+    let body = |point: &G1Projective| {
+        let bases = [*point, glv_endomorphism(point)];
+        shamir_glv_mul_2d(&bases, &coeffs, &signs)
+    };
 
-            // Shamir's trick with sign handling
-            shamir_glv_mul_2d(&bases, &coeffs, &signs)
-        })
-        .collect()
+    if points.len() >= MIN_PAR_SIZE {
+        points.par_iter().map(body).collect()
+    } else {
+        points.iter().map(body).collect()
+    }
 }
 
-/// Shamir's trick for 2-point scalar multiplication with signs
+/// Shamir's trick for 2-point scalar mul with signs.
+/// Converts to affine for cheaper mixed addition.
 pub(crate) fn shamir_glv_mul_2d(
     bases: &[G1Projective; 2],
     coeffs: &[<Fr as PrimeField>::BigInt; 2],
     signs: &[bool; 2],
 ) -> G1Projective {
+    let affine_vec = G1Projective::normalize_batch(bases);
+    let neg_bases = [-affine_vec[0], -affine_vec[1]];
+
     let mut result = G1Projective::zero();
     let max_bits = coeffs
         .iter()
@@ -40,15 +47,14 @@ pub(crate) fn shamir_glv_mul_2d(
         .unwrap_or(0);
 
     for bit_idx in (0..max_bits).rev() {
-        result = result.double();
+        result.double_in_place();
 
-        // Check bits and accumulate
         for (i, coeff) in coeffs.iter().enumerate() {
             if coeff.get_bit(bit_idx) {
                 if signs[i] {
-                    result += bases[i];
+                    result += affine_vec[i];
                 } else {
-                    result -= bases[i];
+                    result += neg_bases[i];
                 }
             }
         }
@@ -74,7 +80,7 @@ impl PrecomputedShamir2Table {
     pub fn new(bases: &[G1Projective; 2]) -> Self {
         let mut table = [G1Projective::zero(); 16];
 
-        table.par_iter_mut().enumerate().for_each(|(idx, point)| {
+        table.iter_mut().enumerate().for_each(|(idx, point)| {
             let point_mask = idx & 0x3; // Which points to include
             let sign_mask = idx >> 2; // Which points to negate
 
@@ -101,13 +107,16 @@ impl PrecomputedShamir2Table {
 
 impl PrecomputedShamir2Data {
     pub fn new(points: &[G1Projective]) -> Self {
-        let shamir_tables = points
-            .par_iter()
-            .map(|point| {
-                let glv_bases = [*point, glv_endomorphism(point)];
-                PrecomputedShamir2Table::new(&glv_bases)
-            })
-            .collect();
+        let body = |point: &G1Projective| {
+            let glv_bases = [*point, glv_endomorphism(point)];
+            PrecomputedShamir2Table::new(&glv_bases)
+        };
+
+        let shamir_tables = if points.len() >= MIN_PAR_SIZE {
+            points.par_iter().map(body).collect()
+        } else {
+            points.iter().map(body).collect()
+        };
 
         Self { shamir_tables }
     }
@@ -122,10 +131,15 @@ pub fn glv_two_precompute(points: &[G1Projective]) -> PrecomputedShamir2Data {
 pub fn glv_two_scalar_mul(data: &PrecomputedShamir2Data, scalar: Fr) -> Vec<G1Projective> {
     let (coeffs, signs) = decompose_scalar_2d(scalar);
 
-    data.shamir_tables
-        .par_iter()
-        .map(|table| shamir_glv_mul_2d_precomputed(table, &coeffs, &signs))
-        .collect()
+    let body = |table: &PrecomputedShamir2Table| {
+        shamir_glv_mul_2d_precomputed(table, &coeffs, &signs)
+    };
+
+    if data.shamir_tables.len() >= MIN_PAR_SIZE {
+        data.shamir_tables.par_iter().map(body).collect()
+    } else {
+        data.shamir_tables.iter().map(body).collect()
+    }
 }
 
 /// Shamir's trick using precomputed table
@@ -214,13 +228,16 @@ impl Windowed2Signed2Table {
 
 impl Windowed2Signed2Data {
     pub fn new(points: &[G1Projective]) -> Self {
-        let windowed2_tables = points
-            .par_iter()
-            .map(|point| {
-                let glv_bases = [*point, glv_endomorphism(point)];
-                Windowed2Signed2Table::new(&glv_bases)
-            })
-            .collect();
+        let body = |point: &G1Projective| {
+            let glv_bases = [*point, glv_endomorphism(point)];
+            Windowed2Signed2Table::new(&glv_bases)
+        };
+
+        let windowed2_tables = if points.len() >= MIN_PAR_SIZE {
+            points.par_iter().map(body).collect()
+        } else {
+            points.iter().map(body).collect()
+        };
 
         Self { windowed2_tables }
     }
@@ -238,10 +255,15 @@ pub fn glv_two_scalar_mul_windowed2_signed(
 ) -> Vec<G1Projective> {
     let (coeffs, signs) = decompose_scalar_2d(scalar);
 
-    data.windowed2_tables
-        .par_iter()
-        .map(|table| glv_two_scalar_mul_windowed2_signed_single(table, &coeffs, &signs))
-        .collect()
+    let body = |table: &Windowed2Signed2Table| {
+        glv_two_scalar_mul_windowed2_signed_single(table, &coeffs, &signs)
+    };
+
+    if data.windowed2_tables.len() >= MIN_PAR_SIZE {
+        data.windowed2_tables.par_iter().map(body).collect()
+    } else {
+        data.windowed2_tables.iter().map(body).collect()
+    }
 }
 
 /// 2-bit windowed signed multiplication for single point
@@ -252,8 +274,8 @@ fn glv_two_scalar_mul_windowed2_signed_single(
 ) -> G1Projective {
     // Convert scalars to signed coefficients for 2-bit windowed processing
     let scalar_coeffs: Vec<Vec<i8>> = coeffs
-        .par_iter()
-        .zip(signs.par_iter())
+        .iter()
+        .zip(signs.iter())
         .map(|(scalar, &is_positive)| {
             let mut coeffs = Vec::new();
             let scalar_ref = scalar.as_ref();
@@ -320,15 +342,16 @@ pub fn glv_two_scalar_mul_decomposed(
     coeffs: &[<Fr as PrimeField>::BigInt; 2],
     signs: &[bool; 2],
 ) -> Vec<G1Projective> {
-    data.shamir_tables
-        .par_iter()
-        .map(|table| shamir_glv_mul_2d_precomputed(table, coeffs, signs))
-        .collect()
-}
+    let body = |table: &PrecomputedShamir2Table| {
+        shamir_glv_mul_2d_precomputed(table, coeffs, signs)
+    };
 
-// ============================================================================
-// Fixed-base MSM utilities
-// ============================================================================
+    if data.shamir_tables.len() >= MIN_PAR_SIZE {
+        data.shamir_tables.par_iter().map(body).collect()
+    } else {
+        data.shamir_tables.iter().map(body).collect()
+    }
+}
 
 /// Decomposed scalar for separate handling
 pub struct DecomposedScalar2D {
@@ -372,18 +395,29 @@ impl FixedBasePrecomputedG1 {
 
     /// Multiple scalar multiplications
     pub fn mul_scalars(&self, scalars: &[Fr]) -> Vec<G1Projective> {
-        scalars
-            .par_iter()
-            .map(|&scalar| self.mul_scalar(scalar))
-            .collect()
+        if scalars.len() >= MIN_PAR_SIZE {
+            scalars
+                .par_iter()
+                .map(|&scalar| self.mul_scalar(scalar))
+                .collect()
+        } else {
+            scalars.iter().map(|&scalar| self.mul_scalar(scalar)).collect()
+        }
     }
 
     /// Multiple scalar multiplications with decomposed scalars
     pub fn mul_scalars_decomposed(&self, decomposed: &[DecomposedScalar2D]) -> Vec<G1Projective> {
-        decomposed
-            .par_iter()
-            .map(|d| self.mul_scalar_decomposed(d))
-            .collect()
+        if decomposed.len() >= MIN_PAR_SIZE {
+            decomposed
+                .par_iter()
+                .map(|d| self.mul_scalar_decomposed(d))
+                .collect()
+        } else {
+            decomposed
+                .iter()
+                .map(|d| self.mul_scalar_decomposed(d))
+                .collect()
+        }
     }
 }
 

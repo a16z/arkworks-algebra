@@ -1,63 +1,108 @@
 //! 4D GLV scalar multiplication for BN254 G2
 //! Three methods: (1) online, (2) precomputed full, (3) signed table
 
-use ark_bn254::{Fr, G2Projective};
-use ark_ec::AdditiveGroup;
+use ark_bn254::{Fr, G2Affine, G2Projective};
+use ark_ec::{AdditiveGroup, CurveGroup};
 use ark_ff::{BigInteger, PrimeField};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::Zero;
 use rayon::prelude::*;
+use std::cell::RefCell;
 
 use crate::decomp_4d::decompose_scalar_4d;
 use crate::frobenius::frobenius_psi_power_projective;
+
+/// Minimum collection length to justify rayon par_iter overhead
+const MIN_PAR_SIZE: usize = 64;
+
+struct CachedAffineBases {
+    point: G2Projective,
+    bases: [G2Affine; 4],
+}
+
+/// Bitwise comparison of projective coordinates (not mathematical equality).
+/// Detects whether the *same projective representation* was passed again,
+/// which is the caller's pattern (same base_proj every call).
+#[inline]
+fn same_proj_repr(a: &G2Projective, b: &G2Projective) -> bool {
+    a.x == b.x && a.y == b.y && a.z == b.z
+}
+
+thread_local! {
+    static FROBENIUS_CACHE: RefCell<Option<CachedAffineBases>> = const { RefCell::new(None) };
+}
+
+fn get_or_compute_affine_bases(point: &G2Projective) -> [G2Affine; 4] {
+    FROBENIUS_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(ref cached) = *cache {
+            if same_proj_repr(&cached.point, point) {
+                return cached.bases;
+            }
+        }
+
+        let proj_bases = [
+            *point,
+            frobenius_psi_power_projective(point, 1),
+            frobenius_psi_power_projective(point, 2),
+            frobenius_psi_power_projective(point, 3),
+        ];
+        let affine_vec = G2Projective::normalize_batch(&proj_bases);
+        let bases = [affine_vec[0], affine_vec[1], affine_vec[2], affine_vec[3]];
+
+        *cache = Some(CachedAffineBases {
+            point: *point,
+            bases,
+        });
+        bases
+    })
+}
 
 /// Online 4D GLV scalar multiplication
 pub fn glv_four_scalar_mul_online(scalar: Fr, points: &[G2Projective]) -> Vec<G2Projective> {
     let (coeffs, signs) = decompose_scalar_4d(scalar);
 
-    points
-        .par_iter()
-        .map(|point| {
-            // Compute Frobenius powers: P, ψ(P), ψ²(P), ψ³(P)
-            let bases = [
-                *point,
-                frobenius_psi_power_projective(point, 1),
-                frobenius_psi_power_projective(point, 2),
-                frobenius_psi_power_projective(point, 3),
-            ];
+    if points.len() == 1 {
+        let bases = get_or_compute_affine_bases(&points[0]);
+        return vec![shamir_glv_mul_4d_affine(&bases, &coeffs, &signs)];
+    }
 
-            // Shamir's trick with sign handling
-            shamir_glv_mul_4d(&bases, &coeffs, &signs)
-        })
-        .collect()
+    let body = |point: &G2Projective| {
+        let bases = get_or_compute_affine_bases(point);
+        shamir_glv_mul_4d_affine(&bases, &coeffs, &signs)
+    };
+
+    if points.len() >= MIN_PAR_SIZE {
+        points.par_iter().map(body).collect()
+    } else {
+        points.iter().map(body).collect()
+    }
 }
 
-/// Shamir's trick for 4-point scalar multiplication with signs
-pub(crate) fn shamir_glv_mul_4d(
-    bases: &[G2Projective; 4],
+/// Shamir's trick for 4-point scalar mul (affine bases, mixed addition).
+/// Pre-applies signs to eliminate inner-loop branch.
+pub(crate) fn shamir_glv_mul_4d_affine(
+    bases: &[G2Affine; 4],
     coeffs: &[<Fr as PrimeField>::BigInt; 4],
     signs: &[bool; 4],
 ) -> G2Projective {
-    let mut result = G2Projective::zero();
+    let effective: [G2Affine; 4] = std::array::from_fn(|i| {
+        if signs[i] { -bases[i] } else { bases[i] }
+    });
+
     let max_bits = coeffs
         .iter()
         .map(|c| c.num_bits() as usize)
         .max()
         .unwrap_or(0);
 
+    let mut result = G2Projective::zero();
     for bit_idx in (0..max_bits).rev() {
-        result = result.double();
+        result.double_in_place();
 
-        // Check bits and accumulate
-        for (i, coeff) in coeffs.iter().enumerate() {
-            if coeff.get_bit(bit_idx) {
-                if signs[i] {
-                    // signs[i] = true means negative in 4D decomposition
-                    result -= bases[i];
-                } else {
-                    // signs[i] = false means positive in 4D decomposition
-                    result += bases[i];
-                }
+        for i in 0..4 {
+            if coeffs[i].get_bit(bit_idx) {
+                result += effective[i];
             }
         }
     }
@@ -82,9 +127,9 @@ impl PrecomputedShamir4Table {
     pub fn new(bases: &[G2Projective; 4]) -> Self {
         let mut table = vec![G2Projective::zero(); 256];
 
-        table.par_iter_mut().enumerate().for_each(|(idx, point)| {
-            let point_mask = idx & 0xF; // Which points to include
-            let sign_mask = idx >> 4; // Which points to negate
+        table.iter_mut().enumerate().for_each(|(idx, point)| {
+            let point_mask = idx & 0xF;
+            let sign_mask = idx >> 4;
 
             *point = G2Projective::zero();
             for i in 0..4 {
@@ -109,18 +154,21 @@ impl PrecomputedShamir4Table {
 
 impl PrecomputedShamir4Data {
     pub fn new(points: &[G2Projective]) -> Self {
-        let shamir_tables = points
-            .par_iter()
-            .map(|point| {
-                let frobenius_bases = [
-                    *point,
-                    frobenius_psi_power_projective(point, 1),
-                    frobenius_psi_power_projective(point, 2),
-                    frobenius_psi_power_projective(point, 3),
-                ];
-                PrecomputedShamir4Table::new(&frobenius_bases)
-            })
-            .collect();
+        let body = |point: &G2Projective| {
+            let frobenius_bases = [
+                *point,
+                frobenius_psi_power_projective(point, 1),
+                frobenius_psi_power_projective(point, 2),
+                frobenius_psi_power_projective(point, 3),
+            ];
+            PrecomputedShamir4Table::new(&frobenius_bases)
+        };
+
+        let shamir_tables = if points.len() >= MIN_PAR_SIZE {
+            points.par_iter().map(body).collect()
+        } else {
+            points.iter().map(body).collect()
+        };
 
         Self { shamir_tables }
     }
@@ -135,10 +183,15 @@ pub fn glv_four_precompute(points: &[G2Projective]) -> PrecomputedShamir4Data {
 pub fn glv_four_scalar_mul(data: &PrecomputedShamir4Data, scalar: Fr) -> Vec<G2Projective> {
     let (coeffs, signs) = decompose_scalar_4d(scalar);
 
-    data.shamir_tables
-        .par_iter()
-        .map(|table| shamir_glv_mul_4d_precomputed(table, &coeffs, &signs))
-        .collect()
+    let body = |table: &PrecomputedShamir4Table| {
+        shamir_glv_mul_4d_precomputed(table, &coeffs, &signs)
+    };
+
+    if data.shamir_tables.len() >= MIN_PAR_SIZE {
+        data.shamir_tables.par_iter().map(body).collect()
+    } else {
+        data.shamir_tables.iter().map(body).collect()
+    }
 }
 
 /// Shamir's trick using precomputed table
@@ -230,18 +283,21 @@ impl Windowed2Signed4Table {
 
 impl Windowed2Signed4Data {
     pub fn new(points: &[G2Projective]) -> Self {
-        let windowed2_tables = points
-            .par_iter()
-            .map(|point| {
-                let frobenius_bases = [
-                    *point,
-                    frobenius_psi_power_projective(point, 1),
-                    frobenius_psi_power_projective(point, 2),
-                    frobenius_psi_power_projective(point, 3),
-                ];
-                Windowed2Signed4Table::new(&frobenius_bases)
-            })
-            .collect();
+        let body = |point: &G2Projective| {
+            let frobenius_bases = [
+                *point,
+                frobenius_psi_power_projective(point, 1),
+                frobenius_psi_power_projective(point, 2),
+                frobenius_psi_power_projective(point, 3),
+            ];
+            Windowed2Signed4Table::new(&frobenius_bases)
+        };
+
+        let windowed2_tables = if points.len() >= MIN_PAR_SIZE {
+            points.par_iter().map(body).collect()
+        } else {
+            points.iter().map(body).collect()
+        };
 
         Self { windowed2_tables }
     }
@@ -259,10 +315,15 @@ pub fn glv_four_scalar_mul_windowed2_signed(
 ) -> Vec<G2Projective> {
     let (coeffs, signs) = decompose_scalar_4d(scalar);
 
-    data.windowed2_tables
-        .par_iter()
-        .map(|table| glv_four_scalar_mul_windowed2_signed_single(table, &coeffs, &signs))
-        .collect()
+    let body = |table: &Windowed2Signed4Table| {
+        glv_four_scalar_mul_windowed2_signed_single(table, &coeffs, &signs)
+    };
+
+    if data.windowed2_tables.len() >= MIN_PAR_SIZE {
+        data.windowed2_tables.par_iter().map(body).collect()
+    } else {
+        data.windowed2_tables.iter().map(body).collect()
+    }
 }
 
 /// 2-bit windowed signed multiplication for single point
@@ -273,16 +334,14 @@ fn glv_four_scalar_mul_windowed2_signed_single(
 ) -> G2Projective {
     // Convert scalars to signed coefficients for 2-bit windowed processing
     let scalar_coeffs: Vec<Vec<i8>> = coeffs
-        .par_iter()
-        .zip(signs.par_iter())
+        .iter()
+        .zip(signs.iter())
         .map(|(scalar, &is_negative)| {
             let mut coeffs = Vec::new();
             let scalar_ref = scalar.as_ref();
 
-            // Convert to base-4 coefficients (2 bits at a time)
             for limb in scalar_ref {
                 for window_idx in 0..32 {
-                    // 64 bits / 2 = 32 windows per limb
                     let window_bits = (limb >> (window_idx * 2)) & 0x3;
                     let signed_coeff = if is_negative {
                         -(window_bits as i8)
@@ -340,8 +399,13 @@ pub fn glv_four_scalar_mul_decomposed(
     coeffs: &[<Fr as PrimeField>::BigInt; 4],
     signs: &[bool; 4],
 ) -> Vec<G2Projective> {
-    data.shamir_tables
-        .par_iter()
-        .map(|table| shamir_glv_mul_4d_precomputed(table, coeffs, signs))
-        .collect()
+    let body = |table: &PrecomputedShamir4Table| {
+        shamir_glv_mul_4d_precomputed(table, coeffs, signs)
+    };
+
+    if data.shamir_tables.len() >= MIN_PAR_SIZE {
+        data.shamir_tables.par_iter().map(body).collect()
+    } else {
+        data.shamir_tables.iter().map(body).collect()
+    }
 }

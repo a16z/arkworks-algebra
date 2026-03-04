@@ -14,11 +14,10 @@ use crate::{
     Windowed2Signed2Data,
 };
 
-// ============================================================================
-// Operation 1: v[i] = v[i] + scalar * g[i]
-// ============================================================================
+/// Minimum vector length to justify rayon par_iter overhead
+const MIN_PAR_SIZE: usize = 64;
 
-/// Online version
+/// Online version using projective GLV endomorphism and Shamir's trick
 pub fn vector_add_scalar_mul_g1_online(
     v: &mut [G1Projective],
     generators: &[G1Projective],
@@ -27,12 +26,16 @@ pub fn vector_add_scalar_mul_g1_online(
     assert_eq!(v.len(), generators.len());
     let (coeffs, signs) = decompose_scalar_2d(scalar);
 
-    v.par_iter_mut()
-        .zip(generators.par_iter())
-        .for_each(|(vi, gen)| {
-            let bases = [*gen, glv_endomorphism(gen)];
-            *vi += shamir_glv_mul_2d(&bases, &coeffs, &signs);
-        });
+    let body = |(vi, gen): (&mut G1Projective, &G1Projective)| {
+        let bases = [*gen, glv_endomorphism(gen)];
+        *vi += shamir_glv_mul_2d(&bases, &coeffs, &signs);
+    };
+
+    if v.len() >= MIN_PAR_SIZE {
+        v.par_iter_mut().zip(generators.par_iter()).for_each(body);
+    } else {
+        v.iter_mut().zip(generators.iter()).for_each(body);
+    }
 }
 
 /// Precomputed full
@@ -44,11 +47,17 @@ pub fn vector_add_scalar_mul_g1_precomputed(
     assert_eq!(v.len(), precomputed_tables.len());
     let (coeffs, signs) = decompose_scalar_2d(scalar);
 
-    v.par_iter_mut()
-        .zip(precomputed_tables.par_iter())
-        .for_each(|(vi, table)| {
-            *vi += shamir_glv_mul_2d_precomputed(table, &coeffs, &signs);
-        });
+    let body = |(vi, table): (&mut G1Projective, &PrecomputedShamir2Table)| {
+        *vi += shamir_glv_mul_2d_precomputed(table, &coeffs, &signs);
+    };
+
+    if v.len() >= MIN_PAR_SIZE {
+        v.par_iter_mut()
+            .zip(precomputed_tables.par_iter())
+            .for_each(body);
+    } else {
+        v.iter_mut().zip(precomputed_tables.iter()).for_each(body);
+    }
 }
 
 /// 2-bit signed precomputed
@@ -59,22 +68,20 @@ pub fn vector_add_scalar_mul_g1_windowed2_signed(
 ) {
     assert_eq!(v.len(), precomputed_generators.windowed2_tables.len());
 
-    // Use the GLV scalar multiplication on the generators
     let products = glv_two_scalar_mul_windowed2_signed(precomputed_generators, scalar);
 
-    // Add products to v
-    v.par_iter_mut()
-        .zip(products.par_iter())
-        .for_each(|(vi, &prod)| {
-            *vi += prod;
-        });
+    let body = |(vi, &prod): (&mut G1Projective, &G1Projective)| {
+        *vi += prod;
+    };
+
+    if v.len() >= MIN_PAR_SIZE {
+        v.par_iter_mut().zip(products.par_iter()).for_each(body);
+    } else {
+        v.iter_mut().zip(products.iter()).for_each(body);
+    }
 }
 
-// ============================================================================
-// Operation 2: v[i] = scalar * v[i] + gamma[i]
-// ============================================================================
-
-/// Online
+/// Online version using projective GLV endomorphism and Shamir's trick
 pub fn vector_scalar_mul_add_gamma_g1_online(
     v: &mut [G1Projective],
     scalar: Fr,
@@ -83,23 +90,23 @@ pub fn vector_scalar_mul_add_gamma_g1_online(
     assert_eq!(v.len(), gamma.len());
     let (coeffs, signs) = decompose_scalar_2d(scalar);
 
-    v.par_iter_mut()
-        .zip(gamma.par_iter())
-        .for_each(|(vi, &gamma_i)| {
-            let bases = [*vi, glv_endomorphism(vi)];
-            *vi = shamir_glv_mul_2d(&bases, &coeffs, &signs) + gamma_i;
-        });
+    let body = |(vi, &gamma_i): (&mut G1Projective, &G1Projective)| {
+        let bases = [*vi, glv_endomorphism(vi)];
+        *vi = shamir_glv_mul_2d(&bases, &coeffs, &signs) + gamma_i;
+    };
+
+    if v.len() >= MIN_PAR_SIZE {
+        v.par_iter_mut().zip(gamma.par_iter()).for_each(body);
+    } else {
+        v.iter_mut().zip(gamma.iter()).for_each(body);
+    }
 }
 
-/// Precomputed method
-/// Note: We can't precompute on v since it changes, so this just uses online method
 pub fn vector_scalar_mul_add_gamma_g1_precomputed(
     v: &mut [G1Projective],
     scalar: Fr,
     gamma: &[G1Projective],
 ) {
-    // For this operation, we can't precompute on v since it's being modified
-    // So we just use the online version
     vector_scalar_mul_add_gamma_g1_online(v, scalar, gamma);
 }
 
@@ -112,21 +119,24 @@ pub fn vector_scalar_mul_add_gamma_g1_windowed2_signed(
 ) {
     assert_eq!(v.len(), gamma.len());
 
-    // Compute scalar * v[i] for all i using online method
     let products = glv_two_scalar_mul_online(scalar, v);
 
-    // Replace v with products + gamma
-    v.par_iter_mut()
-        .zip(products.par_iter())
-        .zip(gamma.par_iter())
-        .for_each(|((vi, &prod), &gamma_i)| {
-            *vi = prod + gamma_i;
-        });
-}
+    let body = |((vi, &prod), &gamma_i): ((&mut G1Projective, &G1Projective), &G1Projective)| {
+        *vi = prod + gamma_i;
+    };
 
-// ============================================================================
-// Helper functions for precomputation
-// ============================================================================
+    if v.len() >= MIN_PAR_SIZE {
+        v.par_iter_mut()
+            .zip(products.par_iter())
+            .zip(gamma.par_iter())
+            .for_each(body);
+    } else {
+        v.iter_mut()
+            .zip(products.iter())
+            .zip(gamma.iter())
+            .for_each(body);
+    }
+}
 
 /// Precompute Shamir tables for a set of G1 generators
 pub fn precompute_g1_generators(generators: &[G1Projective]) -> PrecomputedShamir2Data {

@@ -129,6 +129,24 @@ impl<P: SWCurveConfig> Projective<P> {
         assert!(p.is_in_correct_subgroup_assuming_on_curve());
         p.into()
     }
+
+    #[cold]
+    #[inline(never)]
+    fn set_from_affine(&mut self, x: P::BaseField, y: P::BaseField) {
+        self.x = x;
+        self.y = y;
+        self.z = P::BaseField::one();
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn handle_equal_or_opposite(&mut self, s_equal: bool) {
+        if s_equal {
+            self.double_in_place();
+        } else {
+            *self = Self::zero();
+        }
+    }
 }
 
 impl<P: SWCurveConfig> Zeroize for Projective<P> {
@@ -342,9 +360,7 @@ impl<P: SWCurveConfig, T: Borrow<Affine<P>>> AddAssign<T> for Projective<P> {
         // will do nothing
         if let Some((other_x, other_y)) = other.xy() {
             if self.is_zero() {
-                self.x = other_x;
-                self.y = other_y;
-                self.z = P::BaseField::one();
+                self.set_from_affine(other_x, other_y);
                 return;
             }
 
@@ -362,13 +378,7 @@ impl<P: SWCurveConfig, T: Borrow<Affine<P>>> AddAssign<T> for Projective<P> {
             s2 *= &z1z1;
 
             if self.x == u2 {
-                if self.y == s2 {
-                    // The two points are equal, so we double.
-                    self.double_in_place();
-                } else {
-                    // a + (-a) = 0
-                    *self = Self::zero()
-                }
+                self.handle_equal_or_opposite(self.y == s2);
             } else {
                 // H = U2-X1
                 let mut h = u2;
@@ -489,13 +499,7 @@ impl<'a, P: SWCurveConfig> AddAssign<&'a Self> for Projective<P> {
         s2 *= &z1z1;
 
         if u1 == u2 {
-            if s1 == s2 {
-                // The two points are equal, so we double.
-                self.double_in_place();
-            } else {
-                // a + (-a) = 0
-                *self = Self::zero();
-            }
+            self.handle_equal_or_opposite(s1 == s2);
         } else {
             // H = U2-U1
             let mut h = u2;

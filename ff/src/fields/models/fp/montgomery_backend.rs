@@ -549,6 +549,7 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
         BigInt::new(r)
     }
 
+    #[inline(always)]
     #[unroll_for_loops(12)]
     fn sum_of_products<const M: usize>(
         a: &[Fp<MontBackend<Self, N>, N>; M],
