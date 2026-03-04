@@ -1,7 +1,7 @@
 //! 2D GLV scalar multiplication for BN254 G1
 //! Three methods: (1) online, (2) precomputed full, (3) signed table
 
-use ark_bn254::{Fr, G1Affine, G1Projective};
+use ark_bn254::{Fr, G1Projective};
 use ark_ec::{AdditiveGroup, CurveGroup};
 use ark_ff::{BigInteger, PrimeField};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
@@ -56,36 +56,6 @@ pub(crate) fn shamir_glv_mul_2d(
                 } else {
                     result += neg_bases[i];
                 }
-            }
-        }
-    }
-
-    result
-}
-
-/// Shamir's trick for 2-point scalar mul with pre-normalized affine bases.
-/// Avoids per-element normalize_batch when caller already has affine points.
-pub(crate) fn shamir_glv_mul_2d_affine(
-    bases: &[G1Affine; 2],
-    coeffs: &[<Fr as PrimeField>::BigInt; 2],
-    signs: &[bool; 2],
-) -> G1Projective {
-    let effective: [G1Affine; 2] = std::array::from_fn(|i| {
-        if signs[i] { bases[i] } else { -bases[i] }
-    });
-
-    let max_bits = coeffs
-        .iter()
-        .map(|c| c.num_bits() as usize)
-        .max()
-        .unwrap_or(0);
-
-    let mut result = G1Projective::zero();
-    for bit_idx in (0..max_bits).rev() {
-        result.double_in_place();
-        for i in 0..2 {
-            if coeffs[i].get_bit(bit_idx) {
-                result += effective[i];
             }
         }
     }

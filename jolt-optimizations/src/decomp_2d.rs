@@ -1,6 +1,6 @@
 //! 2D GLV scalar multiplication implementations for BN254 G1
 
-use ark_bn254::{Fq, Fr, G1Affine, G1Projective};
+use ark_bn254::{Fq, Fr, G1Projective};
 use ark_ff::{BigInteger, MontFp, PrimeField};
 
 /// GLV endomorphism coefficient for BN254 G1
@@ -231,19 +231,11 @@ pub fn glv_endomorphism(point: &G1Projective) -> G1Projective {
     res
 }
 
-/// Apply GLV endomorphism to G1 affine point: (x, y) → (β·x, y)
-///
-/// WARNING: this function produces off-curve results on WASM due to a bug in
-/// Fq multiplication for certain operands produced by normalize_batch.
-/// Use `glv_endomorphism` (projective version) instead in production paths.
-pub fn glv_endomorphism_affine(point: &G1Affine) -> G1Affine {
-    G1Affine::new_unchecked(point.x * ENDO_COEFF, point.y)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ark_ec::{AffineRepr, CurveGroup};
+    use ark_bn254::G1Affine;
+    use ark_ec::{CurveGroup, PrimeGroup};
     use ark_ff::{MontFp, PrimeField};
     use ark_std::UniformRand;
     use std::ops::Mul;
@@ -302,13 +294,6 @@ mod tests {
         let mut rng = ark_std::test_rng();
         for _ in 0..100 {
             let p = G1Projective::rand(&mut rng);
-            let aff = p.into_affine();
-            let endo_aff = glv_endomorphism_affine(&aff);
-            assert!(
-                is_on_curve_affine(&endo_aff),
-                "endomorphism produced off-curve point"
-            );
-
             let endo_proj = glv_endomorphism(&p);
             assert!(
                 is_on_curve(&endo_proj),
@@ -319,10 +304,9 @@ mod tests {
 
     #[test]
     fn test_glv_mul_matches_standard() {
-        use crate::glv_two::shamir_glv_mul_2d_affine;
+        use crate::glv_two::shamir_glv_mul_2d;
 
-        let gen = G1Affine::generator();
-        let gen_proj: G1Projective = gen.into();
+        let gen_proj = G1Projective::generator();
         let mut rng = ark_std::test_rng();
 
         for _ in 0..100 {
@@ -331,8 +315,8 @@ mod tests {
             assert!(is_on_curve(&expected), "standard mul off-curve");
 
             let (coeffs, signs) = decompose_scalar_2d(scalar);
-            let glv_aff = glv_endomorphism_affine(&gen);
-            let result = shamir_glv_mul_2d_affine(&[gen, glv_aff], &coeffs, &signs);
+            let glv_proj = glv_endomorphism(&gen_proj);
+            let result = shamir_glv_mul_2d(&[gen_proj, glv_proj], &coeffs, &signs);
             assert!(is_on_curve(&result), "shamir result off-curve");
 
             assert_eq!(
@@ -345,19 +329,18 @@ mod tests {
 
     #[test]
     fn test_glv_mul_random_base() {
-        use crate::glv_two::shamir_glv_mul_2d_affine;
+        use crate::glv_two::shamir_glv_mul_2d;
 
         let mut rng = ark_std::test_rng();
 
         for _ in 0..100 {
             let base = G1Projective::rand(&mut rng);
-            let base_aff = base.into_affine();
             let scalar = Fr::rand(&mut rng);
 
             let expected = base.mul(scalar);
             let (coeffs, signs) = decompose_scalar_2d(scalar);
-            let glv_aff = glv_endomorphism_affine(&base_aff);
-            let result = shamir_glv_mul_2d_affine(&[base_aff, glv_aff], &coeffs, &signs);
+            let glv_proj = glv_endomorphism(&base);
+            let result = shamir_glv_mul_2d(&[base, glv_proj], &coeffs, &signs);
 
             assert!(is_on_curve(&result), "random base GLV result off-curve");
             assert_eq!(

@@ -15,35 +15,28 @@ use crate::frobenius::frobenius_psi_power_projective;
 /// Minimum collection length to justify rayon par_iter overhead
 const MIN_PAR_SIZE: usize = 64;
 
-// G2Projective = 3 × Fq2 = 3 × 2 × 4 × u64 = 192 bytes
-const G2_PROJ_BYTES: usize = std::mem::size_of::<G2Projective>();
-
 struct CachedAffineBases {
-    point_bytes: [u8; G2_PROJ_BYTES],
+    point: G2Projective,
     bases: [G2Affine; 4],
+}
+
+/// Bitwise comparison of projective coordinates (not mathematical equality).
+/// Detects whether the *same projective representation* was passed again,
+/// which is the caller's pattern (same base_proj every call).
+#[inline]
+fn same_proj_repr(a: &G2Projective, b: &G2Projective) -> bool {
+    a.x == b.x && a.y == b.y && a.z == b.z
 }
 
 thread_local! {
     static FROBENIUS_CACHE: RefCell<Option<CachedAffineBases>> = const { RefCell::new(None) };
 }
 
-#[inline]
-fn point_to_bytes(p: &G2Projective) -> [u8; G2_PROJ_BYTES] {
-    // SAFETY: G2Projective is repr(C)-compatible plain data (3 × Fq2, no
-    // pointers/padding). Byte-level comparison is used solely to detect whether
-    // the *same projective representation* was passed again -- not mathematical
-    // equality -- which is exactly the caller's pattern (same base_proj every
-    // call).
-    unsafe { std::ptr::read(p as *const G2Projective as *const [u8; G2_PROJ_BYTES]) }
-}
-
 fn get_or_compute_affine_bases(point: &G2Projective) -> [G2Affine; 4] {
-    let key = point_to_bytes(point);
-
     FROBENIUS_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         if let Some(ref cached) = *cache {
-            if cached.point_bytes == key {
+            if same_proj_repr(&cached.point, point) {
                 return cached.bases;
             }
         }
@@ -58,7 +51,7 @@ fn get_or_compute_affine_bases(point: &G2Projective) -> [G2Affine; 4] {
         let bases = [affine_vec[0], affine_vec[1], affine_vec[2], affine_vec[3]];
 
         *cache = Some(CachedAffineBases {
-            point_bytes: key,
+            point: *point,
             bases,
         });
         bases
@@ -74,13 +67,16 @@ pub fn glv_four_scalar_mul_online(scalar: Fr, points: &[G2Projective]) -> Vec<G2
         return vec![shamir_glv_mul_4d_affine(&bases, &coeffs, &signs)];
     }
 
-    points
-        .par_iter()
-        .map(|point| {
-            let bases = get_or_compute_affine_bases(point);
-            shamir_glv_mul_4d_affine(&bases, &coeffs, &signs)
-        })
-        .collect()
+    let body = |point: &G2Projective| {
+        let bases = get_or_compute_affine_bases(point);
+        shamir_glv_mul_4d_affine(&bases, &coeffs, &signs)
+    };
+
+    if points.len() >= MIN_PAR_SIZE {
+        points.par_iter().map(body).collect()
+    } else {
+        points.iter().map(body).collect()
+    }
 }
 
 /// Shamir's trick for 4-point scalar mul (affine bases, mixed addition).
