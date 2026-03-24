@@ -169,6 +169,49 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
         result.0[0]
     };
 
+    /// Whether the Barrett reduction needs the ceil fix (tilde_c + 1) to
+    /// guarantee the quotient estimate underestimates by at most 1.
+    ///
+    /// The original Barrett estimate can underestimate by up to 2 when
+    /// `E_max = 2^{n_p-1}/p + eps/2^{n_p} >= 1`, where `eps = 2^{n_p+63} mod p`.
+    /// This const checks the (slightly conservative) upper bound on E_max.
+    /// When true, `barrett_reduce_nplus1_to_n` uses `ceil(c / 2^{n_p})` instead
+    /// of `floor`, trading a possible underflow (handled by a conditional add of
+    /// 2p) for the guarantee that `r < 4p`.
+    #[doc(hidden)]
+    const BARRETT_NEEDS_CEIL: bool = {
+        let spare = Self::MODULUS.num_spare_bits();
+        let n_p = (64 * N as u32) - spare;
+        let r_times_r_prime_over_2 = crate::const_helpers::RBuffer::<N>(
+            [0u64; N],
+            1 << (63 - spare),
+        );
+        let eps: BigInt<N> = const_remainder!(r_times_r_prime_over_2, &Self::MODULUS);
+
+        // Check: mu * 2^{n_p - 64} + eps >= 2^{n_p}
+        // Construct mu_shifted = BARRETT_MU << (n_p - 64) as a BigInt<N>.
+        let shift = n_p - 64; // n_p >= 64 for all multi-limb primes
+        let limb_idx = (shift / 64) as usize;
+        let bit_off = shift % 64;
+        let mut mu_shifted = BigInt::<N>::zero();
+        if bit_off == 0 {
+            mu_shifted.0[limb_idx] = Self::BARRETT_MU;
+        } else {
+            mu_shifted.0[limb_idx] = Self::BARRETT_MU << bit_off;
+            if limb_idx + 1 < N {
+                mu_shifted.0[limb_idx + 1] = Self::BARRETT_MU >> (64 - bit_off);
+            }
+        }
+
+        let (sum, carry) = mu_shifted.const_add_with_carry(&eps);
+        // E_max >= 1 iff sum >= 2^{n_p}. Since n_p = 64*N - spare:
+        if spare > 0 {
+            carry || sum.0[N - 1] >= (1u64 << (64 - spare))
+        } else {
+            carry
+        }
+    };
+
     /// Sets `a = a + b`.
     #[inline(always)]
     fn add_assign(a: &mut Fp<MontBackend<Self, N>, N>, b: &Fp<MontBackend<Self, N>, N>) {
@@ -898,23 +941,14 @@ impl<T: MontConfig<N>, const N: usize> Fp<MontBackend<T, N>, N> {
     }
 
     /// Barrett reduce an `L`-limb BigInt to a field element (compute a mod p), generic over `L`.
-    /// Implementation folds from high to low using the existing N+1 Barrett kernel.
+    /// Reduces the top `min(L, N+1)` limbs first, then folds any remaining low limbs.
     /// Precondition: L >= N. For performance, prefer small L close to N..N+3 when possible.
     #[inline(always)]
     pub fn from_barrett_reduce<const L: usize, const NPLUS1: usize>(unreduced: BigInt<L>) -> Self {
         debug_assert!(NPLUS1 == N + 1);
         debug_assert!(L >= N);
 
-        // Start with acc = 0 (N-limb)
-        let mut acc = BigInt::<N>::zero();
-        // Fold each input limb from high to low: acc' = reduce( limb || acc ) via N+1 kernel
-        // Note: When L == 1, this reduces one N+1 formed by (low_limb, zeros)
-        let mut i = L;
-        while i > 0 {
-            i -= 1;
-            let c2 = nplus1_pair_low_to_bigint::<N, NPLUS1>((unreduced.0[i], acc.0));
-            acc = barrett_reduce_nplus1_to_n::<T, N, NPLUS1>(c2);
-        }
+        let acc = barrett_reduce_limbs_to_n::<T, N, NPLUS1>(&unreduced.0);
         Self::new_unchecked(acc)
     }
 
@@ -942,14 +976,9 @@ impl<T: MontConfig<N>, const N: usize> Fp<MontBackend<T, N>, N> {
 
         // If L > 2N, first fold the extra high limbs down.
         if L > 2 * N {
-            // Fold the tail (indices N..L) into an N-limb accumulator via Barrett.
-            let mut acc = BigInt::<N>::zero();
-            let mut i = L;
-            while i > N {
-                i -= 1;
-                let c2 = nplus1_pair_low_to_bigint::<N, NPLUS1>((limbs.0[i], acc.0));
-                acc = barrett_reduce_nplus1_to_n::<T, N, NPLUS1>(c2);
-            }
+            // Reduce the entire tail (indices N..L) once at the top width,
+            // then fold any remaining low tail limbs.
+            let acc = barrett_reduce_limbs_to_n::<T, N, NPLUS1>(&limbs.0[N..L]);
 
             // Recompose buffer: [low_N | acc | zeros...]
             limbs.0[N..(N + N)].copy_from_slice(&acc.0);
@@ -994,11 +1023,12 @@ impl<T: MontConfig<N>, const N: usize> Fp<MontBackend<T, N>, N> {
     ) -> Self {
         debug_assert!(NPLUS1 == N + 1);
         debug_assert!(NPLUS2 == N + 2);
-        let c1 = BigInt::<NPLUS1>(element.0[1..NPLUS2].try_into().unwrap()); // c1 has N+1 limbs
-        let r1 = barrett_reduce_nplus1_to_n::<T, N, NPLUS1>(c1); // r1 = c1 mod p ([u64; N])
-                                                                 // Round 2: Reduce c2 = c_lo[0] + r1 * r.
-        let c2 = nplus1_pair_low_to_bigint::<N, NPLUS1>((element.0[0], r1.0)); // c2 has N+1 limbs
-        let r2 = barrett_reduce_nplus1_to_n::<T, N, NPLUS1>(c2); // r2 = c2 mod p = c mod p ([u64; N])
+        let r1 = barrett_reduce_nplus1_low_pair_to_n::<T, N, NPLUS1>((
+            element.0[1],
+            element.0[2..NPLUS2].try_into().unwrap(),
+        )); // r1 = floor(c / 2^64) mod p
+        let r2 = barrett_reduce_nplus1_low_pair_to_n::<T, N, NPLUS1>((element.0[0], r1.0));
+        // r2 = c mod p
         Self::new_unchecked(r2)
     }
 
@@ -1389,15 +1419,41 @@ fn nplus1_pair_high_to_bigint<const N: usize, const NPLUS1: usize>(
     BigInt::<NPLUS1>(limbs)
 }
 
+/// Reduce an arbitrary-width little-endian limb slice by first consuming the
+/// largest safe top chunk, then folding the remaining low limbs one at a time.
+///
+/// The N+1 Barrett kernel is valid when the upper N limbs encode a value < p.
+/// For an arbitrary input slice, a top chunk of length N+1 might violate this,
+/// but a top chunk of length N is always safe because its implicit high limb is 0.
 #[inline(always)]
-fn nplus1_pair_low_to_bigint<const N: usize, const NPLUS1: usize>(
-    r_tmp: (u64, [u64; N]),
-) -> BigInt<NPLUS1> {
+fn barrett_reduce_limbs_to_n<T: MontConfig<N>, const N: usize, const NPLUS1: usize>(
+    limbs: &[u64],
+) -> BigInt<N> {
     debug_assert!(NPLUS1 == N + 1);
-    let mut limbs = [0u64; NPLUS1];
-    limbs[0] = r_tmp.0;
-    limbs[1..NPLUS1].copy_from_slice(&r_tmp.1);
-    BigInt::<NPLUS1>(limbs)
+    debug_assert!(!limbs.is_empty());
+
+    let mut init_len = core::cmp::min(limbs.len(), NPLUS1);
+    if init_len == NPLUS1 {
+        let mut upper = [0u64; N];
+        upper.copy_from_slice(&limbs[limbs.len() - N..]);
+        if BigInt::<N>(upper).cmp(&T::MODULUS) != core::cmp::Ordering::Less {
+            init_len = N;
+        }
+    }
+    let init_start = limbs.len() - init_len;
+
+    let mut init = [0u64; NPLUS1];
+    init[..init_len].copy_from_slice(&limbs[init_start..]);
+
+    let mut acc = barrett_reduce_nplus1_to_n::<T, N, NPLUS1>(BigInt::<NPLUS1>(init));
+
+    let mut i = init_start;
+    while i > 0 {
+        i -= 1;
+        acc = barrett_reduce_nplus1_low_pair_to_n::<T, N, NPLUS1>((limbs[i], acc.0));
+    }
+
+    acc
 }
 
 /// Conditional subtraction logic for Barrett reduction, trading an extra comparison for a conditional subtraction.
@@ -1586,50 +1642,68 @@ fn sub_bigint_plus_one_prime<const N: usize>(
 /// Output is the N-limb result `[u64; N]`.
 #[unroll_for_loops(4)]
 #[inline(always)]
-fn barrett_reduce_nplus1_to_n<T: MontConfig<N>, const N: usize, const NPLUS1: usize>(
-    c: BigInt<NPLUS1>,
+fn barrett_reduce_nplus1_low_pair_to_n<T: MontConfig<N>, const N: usize, const NPLUS1: usize>(
+    c: (u64, [u64; N]),
 ) -> BigInt<N> {
     debug_assert!(NPLUS1 == N + 1, "NPLUS1 must be N + 1 for this function");
-    // Compute tilde_c = floor(c / R') = floor(c / 2^MODULUS_BITS)
-    // This involves the top two limbs of the N+1 limb number `c`.
-    // Assume that `N >= 1`
+    let (c_lo, c_hi_n) = c;
+
+    let high_limb = c_hi_n[N - 1];
+    let second_high_limb = c_hi_n.get(N.wrapping_sub(2)).copied().unwrap_or(c_lo);
+
     let tilde_c: u64 = if T::MODULUS_HAS_SPARE_BIT {
-        let high_limb = c.0[N];
-        let second_high_limb = c.0[N - 1]; // N is at least 1, so this is safe
         (high_limb << T::MODULUS_NUM_SPARE_BITS)
             + (second_high_limb >> (64 - T::MODULUS_NUM_SPARE_BITS))
     } else {
-        c.0[N] // If no spare bits, tilde_c is just the highest limb
+        high_limb
     };
 
-    // Estimate m = floor( (tilde_c * BARRETT_MU) / r )
-    // where r = 2^64
-    let m: u64 = ((tilde_c as u128 * T::BARRETT_MU as u128) >> 64) as u64;
+    // For primes where the Barrett estimate can underestimate by 2, use
+    // ceil(c / 2^{n_p}) = tilde_c + 1 instead of floor. This makes the two
+    // rounding errors (floor of mu, ceil of c/2^{n_p}) partially cancel,
+    // keeping the total error in (-1, 1) and thus |q - m| <= 1.
+    // The trade-off: m can now OVERestimate q by 1, causing r = c - m*2p < 0.
+    // We detect this via the borrow flag and correct by adding 2p.
+    let tilde_c_adjusted: u64 = if T::BARRETT_NEEDS_CEIL {
+        tilde_c + 1
+    } else {
+        tilde_c
+    };
 
-    // unroll T::MODULUS_TIMES_2_NPLUS1 from ([u64; N], u64) to BigInt<N+1>
+    let m: u64 = ((tilde_c_adjusted as u128 * T::BARRETT_MU as u128) >> 64) as u64;
+
     let mut m2p = nplus1_pair_high_to_bigint::<N, NPLUS1>(T::MODULUS_TIMES_2_NPLUS1);
-    // Compute m * 2p (N+1 limbs)
     m2p.mul_u64_in_place(m);
 
-    // I really have no idea why the following sequence of operations
-    // is significantly faster than a simple BigInt sub operation.
-    // Compute r_tmp = c - m * 2p (result is ([u64; N], u64))
-    let m_times_2p = (
-        m2p.0[0..N].try_into().unwrap(), // Convert to ([u64; N], u64)
-        m2p.0[N],                        // High limb remains as u64
-    );
-    let (r_tmp, r_tmp_borrow) =
-        sub_bigint_plus_one_prime((c.0[0], c.0[1..N + 1].try_into().unwrap()), m_times_2p);
-    // A borrow here implies c was smaller than m*2p, which shouldn't happen with correct m.
-    debug_assert!(!r_tmp_borrow, "Borrow occurred calculating c - m*2p");
-    // Change formats again!
-    let r_tmp_bigint = nplus1_pair_high_to_bigint::<N, NPLUS1>(r_tmp);
-    // Alternative simple BigInt subtraction (much slower for some reason):
-    /*let (r_tmp_bigint, r_borrow) = c.const_sub_with_borrow(&m2p);
-    debug_assert!(!r_borrow, "Borrow occurred calculating c - m*2p");*/
+    let m_times_2p = (m2p.0[0..N].try_into().unwrap(), m2p.0[N]);
+    let (r_tmp, r_tmp_borrow) = sub_bigint_plus_one_prime((c_lo, c_hi_n), m_times_2p);
 
-    // Use the optimized conditional subtraction to go from N+1 limbs to N limbs.
+    let r_tmp_bigint = if T::BARRETT_NEEDS_CEIL && r_tmp_borrow {
+        // m overestimated q by 1, so r underflowed. Add 2p to correct.
+        let r_nplus1 = nplus1_pair_high_to_bigint::<N, NPLUS1>(r_tmp);
+        let two_p = nplus1_pair_high_to_bigint::<N, NPLUS1>(T::MODULUS_TIMES_2_NPLUS1);
+        let (corrected, _) = r_nplus1.const_add_with_carry(&two_p);
+        corrected
+    } else {
+        debug_assert!(
+            !r_tmp_borrow,
+            "Unexpected borrow in Barrett reduction (BARRETT_NEEDS_CEIL=false)"
+        );
+        nplus1_pair_high_to_bigint::<N, NPLUS1>(r_tmp)
+    };
+
     barrett_cond_subtract::<T, N, NPLUS1>(r_tmp_bigint)
+}
+
+#[unroll_for_loops(4)]
+#[inline(always)]
+fn barrett_reduce_nplus1_to_n<T: MontConfig<N>, const N: usize, const NPLUS1: usize>(
+    c: BigInt<NPLUS1>,
+) -> BigInt<N> {
+    barrett_reduce_nplus1_low_pair_to_n::<T, N, NPLUS1>((
+        c.0[0],
+        c.0[1..N + 1].try_into().unwrap(),
+    ))
 }
 
 #[cfg(test)]
@@ -1641,6 +1715,44 @@ mod test {
     use rand::Rng;
     // constants for the number of limbs in bn254
     const N: usize = 4;
+
+    /// Regression test: BLS12-381 Fq triggers q-m=2 in the original Barrett
+    /// reduction. With the ceil fix (BARRETT_NEEDS_CEIL), this must pass.
+    #[test]
+    fn test_mul_u64_barrett_ceil_fix_bls12_381_fq() {
+        use ark_test_curves::bls12_381::Fq;
+        use core::marker::PhantomData;
+
+        let a: Fq = ark_test_curves::ark_ff::Fp(
+            ArkBigInt::new([
+                0x472418b0b905ca8b,
+                0xaa5bee2466c61f0d,
+                0x4f8fba5f89239f18,
+                0x2380589adf3ccbd9,
+                0xf53300c338273ab9,
+                0x19f8b3670dd463ef,
+            ]),
+            PhantomData,
+        );
+        let b: u64 = 0xd6666f9f53ac2ab9;
+        let expected = a * Fq::from(ArkBigInt::from(b));
+        let result = a.mul_u64::<7>(b);
+        assert_eq!(result, expected, "ceil-fix regression for BLS12-381 Fq");
+    }
+
+    /// Random mul_u64 test over BLS12-381 Fq to exercise BARRETT_NEEDS_CEIL path.
+    #[test]
+    fn test_mul_u64_random_bls12_381_fq() {
+        use ark_test_curves::bls12_381::Fq;
+        let mut rng = test_rng();
+        for _ in 0..1000 {
+            let a = Fq::rand(&mut rng);
+            let b_val: u64 = rng.gen();
+            let expected = a * Fq::from(ArkBigInt::from(b_val));
+            let result = a.mul_u64::<7>(b_val);
+            assert_eq!(result, expected, "mul_u64 mismatch for BLS12-381 Fq");
+        }
+    }
     const NPLUS1: usize = N + 1;
     const NPLUS2: usize = N + 2;
 
@@ -1811,6 +1923,56 @@ mod test {
 
         let sign_is_positive = sign != Sign::Minus;
         (sign_is_positive, limbs)
+    }
+
+    fn random_bigint<const M: usize>(rng: &mut impl Rng) -> ArkBigInt<M> {
+        let mut limbs = [0u64; M];
+        for limb in &mut limbs {
+            *limb = rng.gen();
+        }
+        ArkBigInt::new(limbs)
+    }
+
+    fn bigint_to_biguint<const M: usize>(value: ArkBigInt<M>) -> BigUint {
+        let mut bytes = Vec::with_capacity(8 * M);
+        for limb in value.0 {
+            bytes.extend_from_slice(&limb.to_le_bytes());
+        }
+        BigUint::from_bytes_le(&bytes)
+    }
+
+    fn biguint_to_bigint<const M: usize>(value: &BigUint) -> ArkBigInt<M> {
+        let digits = value.to_u64_digits();
+        let mut limbs = [0u64; M];
+        let len = core::cmp::min(M, digits.len());
+        limbs[..len].copy_from_slice(&digits[..len]);
+        ArkBigInt::new(limbs)
+    }
+
+    #[test]
+    fn test_from_barrett_reduce_paths_match_mod_p() {
+        let mut rng = test_rng();
+        let modulus = BigUint::from_str(
+            "21888242871839275222246405745257275088548364400416034343698204186575808495617",
+        )
+        .unwrap();
+
+        for _ in 0..200 {
+            let x5 = random_bigint::<5>(&mut rng);
+            let expected5 = biguint_to_bigint::<4>(&(bigint_to_biguint(x5) % &modulus));
+            let got5 = Fr::from_barrett_reduce::<5, 5>(x5);
+            assert_eq!(got5.0, expected5, "from_barrett_reduce L=5 mismatch");
+
+            let x6 = random_bigint::<6>(&mut rng);
+            let expected6 = biguint_to_bigint::<4>(&(bigint_to_biguint(x6) % &modulus));
+            let got6 = Fr::from_barrett_reduce::<6, 5>(x6);
+            assert_eq!(got6.0, expected6, "from_barrett_reduce L=6 mismatch");
+
+            let x7 = random_bigint::<7>(&mut rng);
+            let expected7 = biguint_to_bigint::<4>(&(bigint_to_biguint(x7) % &modulus));
+            let got7 = Fr::from_barrett_reduce::<7, 5>(x7);
+            assert_eq!(got7.0, expected7, "from_barrett_reduce L=7 mismatch");
+        }
     }
 
     #[test]

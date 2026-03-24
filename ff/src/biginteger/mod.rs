@@ -167,6 +167,27 @@ macro_rules! const_quotient {
     }};
 }
 
+#[doc(hidden)]
+macro_rules! const_remainder {
+    ($a:expr, $divisor:expr) => {{
+        assert!(!$divisor.const_is_zero());
+        let mut remainder = BigInt::<N>::new([0u64; N]);
+        let mut i = ($a.num_bits() - 1) as isize;
+        let mut carry;
+        while i >= 0 {
+            (remainder, carry) = remainder.const_mul2_with_carry();
+            remainder.0[0] |= $a.get_bit(i as usize) as u64;
+            if remainder.const_geq($divisor) || carry {
+                let (r, borrow) = remainder.const_sub_with_borrow($divisor);
+                remainder = r;
+                assert!(borrow == carry);
+            }
+            i -= 1;
+        }
+        remainder
+    }};
+}
+
 impl<const N: usize> BigInt<N> {
     pub const fn new(value: [u64; N]) -> Self {
         Self(value)
