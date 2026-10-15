@@ -360,7 +360,7 @@ fn msm_signed<V: VariableBaseMSM>(
     #[cfg(not(feature = "parallel"))]
     grouped.sort_unstable_by_key(|i| extract_group(*i));
 
-    // These are the sortings of the different things
+    // Start index of each group in the sorted `grouped`.
     let su1 = 0;
     let si1 = su1 + grouped[su1..].partition_point(|i| extract_group(*i) < 1);
     let su8 = si1 + grouped[si1..].partition_point(|i| extract_group(*i) < 2);
@@ -814,8 +814,10 @@ const THREADS_PER_CHUNK: usize = 2;
 
 /// Computes an MSM using the windowed non-adjacent form (WNAF) algorithm.
 /// To improve parallelism, when number of threads is at least 2, this
-/// function will split the input into enough chunks so that each chunk
-/// can be processed with 2 threads.
+/// function splits the input into one chunk per `THREADS_PER_CHUNK` threads
+/// of the current rayon pool. The chunks and their windows run as nested jobs
+/// on that pool. Do not build a pool per chunk: that spawns threads on every
+/// call and panics where spawning fails (wasm32, iOS thread limits).
 fn msm_bigint_wnaf<V: VariableBaseMSM>(
     mut bases: &[V::MulBase],
     mut scalars: &[<V::ScalarField as PrimeField>::BigInt],
@@ -848,19 +850,7 @@ fn msm_bigint_wnaf<V: VariableBaseMSM>(
 
     cfg_chunks!(bases, chunk_size)
         .zip(cfg_chunks!(scalars, chunk_size))
-        .map(|(bases, scalars)| {
-            #[cfg(feature = "parallel")]
-            let result = rayon::ThreadPoolBuilder::new()
-                .num_threads(THREADS_PER_CHUNK.min(rayon::current_num_threads()))
-                .build()
-                .unwrap()
-                .install(|| msm_bigint_wnaf_parallel::<V>(bases, scalars));
-
-            #[cfg(not(feature = "parallel"))]
-            let result = msm_bigint_wnaf_parallel::<V>(bases, scalars);
-
-            result
-        })
+        .map(|(bases, scalars)| msm_bigint_wnaf_parallel::<V>(bases, scalars))
         .sum()
 }
 
